@@ -47,32 +47,48 @@ remove_packages() {
 }
 
 install_tier() {
-  echo "--- Installing all tiers ---"
+  echo -e "--- Configuration ---"
+  read -p "Do you want to enable TTY auto-start for the target user? [y/N]: " AUTO
+  local target_user=""
+  if [[ "$AUTO" =~ ^[Yy]$ ]]; then
+    read -p "Enter the target username: " target_user
+    if ! validate_user "$target_user"; then
+      echo "Error: Target user validation failed. Aborting installation to prevent unnecessary downloads."
+      exit 1
+    fi
+  fi
+
+  echo -e "\n--- Installing all tiers ---"
   sudo pacman -S --needed $LAYER1 $LAYER2 $LAYER3
 
-  echo -e "\n--- Autostart Configuration ---"
-  read -p "Do you want to enable TTY auto-start for her user? [y/N]: " AUTO
-  if [[ "$AUTO" =~ ^[Yy]$ ]]; then
-    read -p "Enter her exact username: " HER_USER
-    if validate_user "$HER_USER"; then
-      local profile="/home/$HER_USER/.bash_profile"
-      if ! sudo grep -q "KDE PLASMA AUTOSTART" "$profile" 2>/dev/null; then
-        echo -e "\n# --- KDE PLASMA AUTOSTART ---\nif [ -z \"\$DISPLAY\" ] && [ \"\$XDG_VTNR\" = 1 ]; then\n  exec /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland\nfi\n# --- END KDE PLASMA AUTOSTART ---" | sudo tee -a "$profile" >/dev/null
-        sudo chown "$HER_USER:" "$profile"
-        echo "Autostart added successfully to $profile"
-      else
-        echo "Autostart already exists in $profile. Skipping."
-      fi
+  if [ -n "$target_user" ]; then
+    echo -e "\n--- Autostart Configuration ---"
+    local profile="/home/$target_user/.bash_profile"
+    if ! sudo grep -q "KDE PLASMA AUTOSTART" "$profile" 2>/dev/null; then
+      echo -e "\n# --- KDE PLASMA AUTOSTART ---\nif [ -z \"\$DISPLAY\" ] && [ \"\$XDG_VTNR\" = 1 ]; then\n  exec /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland\nfi\n# --- END KDE PLASMA AUTOSTART ---" | sudo tee -a "$profile" >/dev/null
+      sudo chown "$target_user:" "$profile"
+      echo "Autostart added successfully to $profile"
+    else
+      echo "Autostart already exists in $profile. Skipping."
     fi
   fi
 }
 
 remove_tier() {
-  echo "--- Removing Core Plasma (Layer 1) ---"
+  echo -e "--- Configuration ---"
+  read -p "Enter the target username to clean up user-specific configurations (leave blank to skip): " target_user
+  if [ -n "$target_user" ]; then
+    if ! validate_user "$target_user"; then
+      echo "Error: Target user validation failed. Aborting removal."
+      exit 1
+    fi
+  fi
+
+  echo -e "\n--- Removing Core Plasma (Layer 1) ---"
   remove_packages "$LAYER1"
 
   echo -e "\n--- App Layer (Layer 2) ---"
-  read -p "Do you also want to remove her GUI apps (Dolphin, Konsole, Ark, Gwenview)? [y/N]: " RM_APPS
+  read -p "Do you also want to remove the GUI apps (Dolphin, Konsole, Ark, Gwenview)? [y/N]: " RM_APPS
   if [[ "$RM_APPS" =~ ^[Yy]$ ]]; then
     remove_packages "$LAYER2"
   else
@@ -82,24 +98,19 @@ remove_tier() {
   echo -e "\n--- System Daemons (Layer 3) ---"
   echo "NetworkManager and Bluez are strictly protected. Skipping."
 
-  echo -e "\n--- Autostart Cleanup ---"
-  read -p "Did you set up TTY auto-start for her? (Enter her username to clean it, or leave blank to skip): " HER_USER
-  if [ -n "$HER_USER" ]; then
-    if validate_user "$HER_USER"; then
-      local profile="/home/$HER_USER/.bash_profile"
-      if sudo test -f "$profile"; then
-        sudo sed -i '/# --- KDE PLASMA AUTOSTART ---/,/# --- END KDE PLASMA AUTOSTART ---/d' "$profile"
-        echo "Cleaned autostart logic from $profile"
-      fi
+  if [ -n "$target_user" ]; then
+    echo -e "\n--- Autostart Cleanup ---"
+    local profile="/home/$target_user/.bash_profile"
+    if sudo test -f "$profile"; then
+      sudo sed -i '/# --- KDE PLASMA AUTOSTART ---/,/# --- END KDE PLASMA AUTOSTART ---/d' "$profile"
+      echo "Cleaned autostart logic from $profile"
     fi
-  fi
 
-  echo -e "\n--- User Residue Cleanup ---"
-  read -p "Do you want to completely wipe her local KDE config residues? (Enter her username, or leave blank for default NO): " CLEAN_USER
-  if [ -n "$CLEAN_USER" ]; then
-    if validate_user "$CLEAN_USER"; then
-      local user_dir="/home/$CLEAN_USER"
-      echo "Cleaning residues in $user_dir..."
+    echo -e "\n--- User Remnant Cleanup ---"
+    read -p "Do you want to completely wipe local KDE config remnants for $target_user? [y/N]: " CLEAN_REMNANTS
+    if [[ "$CLEAN_REMNANTS" =~ ^[Yy]$ ]]; then
+      local user_dir="/home/$target_user"
+      echo "Cleaning remnants in $user_dir..."
       
       # Safe cleanup using find to avoid string interpolation vulnerabilities
       for prefix in plasma kde kwin dolphinrc konsolerc arkrc gwenviewrc; do
@@ -114,10 +125,10 @@ remove_tier() {
         sudo find "$user_dir/.cache" -maxdepth 1 -name "${prefix}*" -exec rm -rf {} + 2>/dev/null || true
       done
       
-      echo "Residues safely destroyed."
+      echo "Remnants safely removed."
+    else
+      echo "Keeping user configurations."
     fi
-  else
-    echo "Keeping user configurations."
   fi
 
   echo -e "\nPlasma desktop environment cleanly managed."
