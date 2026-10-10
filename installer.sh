@@ -48,20 +48,22 @@ remove_packages() {
 
 install_tier() {
   echo -e "--- Configuration ---"
-  read -p "Do you want to enable TTY auto-start for the target user? [y/N]: " AUTO
   local target_user=""
-  if [[ "$AUTO" =~ ^[Yy]$ ]]; then
-    read -p "Enter the target username: " target_user
+  read -p "Enter the target username (leave blank to skip user config): " target_user
+  local AUTO="N"
+  if [ -n "$target_user" ]; then
     if ! validate_user "$target_user"; then
-      echo "Error: Target user validation failed. Aborting installation to prevent unnecessary downloads."
+      echo "Error: Target user validation failed. Aborting installation."
       exit 1
     fi
+    read -p "Do you want to enable TTY auto-start for $target_user? (Y/n): " AUTO
+    [ -z "$AUTO" ] && AUTO="Y"
   fi
 
   echo -e "\n--- Installing all tiers ---"
   sudo pacman -S --needed $LAYER1 $LAYER2 $LAYER3
 
-  if [ -n "$target_user" ]; then
+  if [[ "$AUTO" =~ ^[Yy]$ ]]; then
     echo -e "\n--- Autostart Configuration ---"
     local profile="/home/$target_user/.bash_profile"
     if ! sudo grep -q "KDE PLASMA AUTOSTART" "$profile" 2>/dev/null; then
