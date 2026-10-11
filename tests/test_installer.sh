@@ -36,7 +36,6 @@ trap 'rm -rf "$SANDBOX_DIR"' EXIT
 
 # Source installer.sh functions without executing the main entry point
 source_installer_functions() {
-  # Extract functions and variable definitions from installer.sh, excluding the main invocation at bottom
   eval "$(sed '/^if \[ "\${1:-}" = "install" \]; then/, $d' "$INSTALLER_SCRIPT")"
 }
 
@@ -129,7 +128,7 @@ test_home_and_profile_resolution() {
     fail "get_user_home dynamically resolves valid home" "Got: $resolved_home"
   fi
 
-  # Profile resolution for bash
+  # Profile resolution for bash / zsh
   local profile
   profile=$(get_user_profile "$current_user" "$SANDBOX_DIR")
   if [[ "$profile" == "$SANDBOX_DIR/.bash_profile" || "$profile" == "$SANDBOX_DIR/.profile" || "$profile" == "$SANDBOX_DIR/.zprofile" ]]; then
@@ -231,6 +230,134 @@ EOF
 }
 
 # ------------------------------------------------------------------------------
+# Test Suite 6: TUI Checklist Engine (CLI Fallback & Toggling)
+# ------------------------------------------------------------------------------
+test_tui_checklist() {
+  echo "Running Test Suite 6: TUI Checklist Engine (Pure-Bash Fallback)..."
+
+  # Test default confirmation (all pre-selected items confirmed by pressing Enter)
+  local res1
+  res1=$(printf "\n" | prompt_checklist_cli "Test Menu" "dolphin" "File Manager" "ON" "firefox" "Web Browser" "ON" "ark" "Archiver" "ON")
+  if [[ "$res1" == "dolphin firefox ark" ]]; then
+    pass "prompt_checklist_cli confirms all default ON items on Enter"
+  else
+    fail "prompt_checklist_cli default confirm" "Expected 'dolphin firefox ark', got: '$res1'"
+  fi
+
+  # Test toggling item 2 (firefox) to OFF, then confirming
+  local res2
+  res2=$(printf "2\n\n" | prompt_checklist_cli "Test Menu" "dolphin" "File Manager" "ON" "firefox" "Web Browser" "ON" "ark" "Archiver" "ON")
+  if [[ "$res2" == "dolphin ark" ]]; then
+    pass "prompt_checklist_cli toggles item 2 from ON to OFF"
+  else
+    fail "prompt_checklist_cli toggle item 2" "Expected 'dolphin ark', got: '$res2'"
+  fi
+
+  # Test selecting 'n' (none)
+  local res3
+  res3=$(printf "n\n\n" | prompt_checklist_cli "Test Menu" "dolphin" "File Manager" "ON" "firefox" "Web Browser" "ON")
+  if [[ -z "$res3" ]]; then
+    pass "prompt_checklist_cli selecting 'n' clears all items"
+  else
+    fail "prompt_checklist_cli selecting 'n'" "Expected empty string, got: '$res3'"
+  fi
+
+  # Test multi-selection with spaces and commas (e.g. '1, 3')
+  local res4
+  res4=$(printf "1, 3\n\n" | prompt_checklist_cli "Test Menu" "dolphin" "File Manager" "OFF" "firefox" "Web Browser" "OFF" "ark" "Archiver" "OFF")
+  if [[ "$res4" == "dolphin ark" ]]; then
+    pass "prompt_checklist_cli supports comma and space separated toggles ('1, 3')"
+  else
+    fail "prompt_checklist_cli comma/space toggle" "Expected 'dolphin ark', got: '$res4'"
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Test Suite 7: Categorized Installation & Pre-Installed Host Detection
+# ------------------------------------------------------------------------------
+test_categorized_install_workflow() {
+  echo "Running Test Suite 7: Categorized Installation Workflow..."
+
+  (
+    # Mock pacman: pretend 'firefox' is ALREADY installed on the host, but 'dolphin' is not
+    pacman() {
+      if [[ "$1" == "-Qq" ]]; then
+        shift
+        local found=()
+        for p in "$@"; do
+          if [[ "$p" == "firefox" ]]; then
+            found+=("$p")
+          fi
+        done
+        if (( ${#found[@]} > 0 )); then
+          printf "%s\n" "${found[@]}"
+          return 0
+        fi
+        return 1
+      fi
+      return 0
+    }
+
+    sudo() {
+      echo "SUDO_INSTALL: $*" >> "$SANDBOX_DIR/install_sudo.log"
+      return 0
+    }
+
+    export -f pacman sudo
+    export PLASMARCH_FORCE_CLI_MENU=1
+
+    # Simulate user input to install_tier:
+    # 1. Target user prompt: Enter (skip user config)
+    # 2. Checklist prompt: Enter (accept defaults: dolphin, konsole, firefox, ark, gwenview)
+    printf "\n\n" | install_tier > "$SANDBOX_DIR/install_run.log" 2>&1 || true
+
+    # Verify: pacman -S --needed was invoked
+    if grep -q "SUDO_INSTALL: pacman -S --needed" "$SANDBOX_DIR/install_sudo.log"; then
+      pass "install_tier executes pacman -S --needed"
+    else
+      fail "install_tier pacman invocation" "Log: $(cat "$SANDBOX_DIR/install_sudo.log" 2>/dev/null || echo 'empty')"
+    fi
+
+    # Verify: Layer 1 (plasma-desktop) is present
+    if grep -q "plasma-desktop" "$SANDBOX_DIR/install_sudo.log"; then
+      pass "install_tier includes Layer 1 core plasma packages"
+    else
+      fail "install_tier core plasma" "Missing plasma-desktop in install queue"
+    fi
+
+    # Verify: Default selected Layer 2 apps (dolphin, konsole, firefox, ark, gwenview) are in queue
+    local install_cmd
+    install_cmd=$(cat "$SANDBOX_DIR/install_sudo.log")
+    if [[ "$install_cmd" =~ "dolphin" ]] && [[ "$install_cmd" =~ "konsole" ]] && [[ "$install_cmd" =~ "firefox" ]] && [[ "$install_cmd" =~ "ark" ]] && [[ "$install_cmd" =~ "gwenview" ]]; then
+      pass "install_tier includes default ON applications from catalog"
+    else
+      fail "install_tier default apps" "Missing default apps in: $install_cmd"
+    fi
+
+    # Verify: Default OFF applications (chromium, okular, kate) are NOT installed by default
+    if [[ ! "$install_cmd" =~ "chromium" ]] && [[ ! "$install_cmd" =~ "okular" ]] && [[ ! "$install_cmd" =~ "kate" ]]; then
+      pass "install_tier excludes default OFF applications (chromium, okular, kate)"
+    else
+      fail "install_tier default OFF apps" "Found unexpected apps in: $install_cmd"
+    fi
+
+    # Verify: Layer 3 daemons (networkmanager, bluez) are in queue
+    if [[ "$install_cmd" =~ "networkmanager" ]] && [[ "$install_cmd" =~ "bluez" ]]; then
+      pass "install_tier includes Layer 3 system daemons"
+    else
+      fail "install_tier system daemons" "Missing networkmanager or bluez in: $install_cmd"
+    fi
+
+    # Verify: Host pre-installed package (firefox) was detected and tagged in menu output
+    if grep -q "firefox.*(installed)" "$SANDBOX_DIR/install_run.log"; then
+      pass "install_tier detects host-installed firefox and tags it as '(installed)'"
+    else
+      fail "install_tier host detection" "Expected '(installed)' tag for firefox in log"
+    fi
+  )
+}
+
+# ------------------------------------------------------------------------------
 # Run all suites
 # ------------------------------------------------------------------------------
 echo "=========================================================="
@@ -242,6 +369,8 @@ test_user_validation
 test_home_and_profile_resolution
 test_package_arrays_and_removal
 test_autostart_lifecycle
+test_tui_checklist
+test_categorized_install_workflow
 
 echo "=========================================================="
 echo "Test Summary: Total: $TEST_COUNT | Passed: $PASS_COUNT | Failed: $FAIL_COUNT"
