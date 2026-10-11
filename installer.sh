@@ -10,7 +10,7 @@ LAYER1="plasma-desktop plasma-nm bluedevil plasma-pa powerdevil kscreen polkit-k
 # ==========================================
 # TIER 2: GUI Apps (Prompted on removal)
 # ==========================================
-LAYER2="dolphin konsole ark gwenview"
+LAYER2="dolphin konsole firefox ark gwenview"
 
 # ==========================================
 # TIER 3: Core System Daemons (Strictly Protected)
@@ -36,7 +36,7 @@ remove_packages() {
   # pacman -Qq prints installed packages to stdout and errors to stderr. || true prevents set -e from aborting.
   local to_remove
   to_remove=$(pacman -Qq $pkgs 2>/dev/null || true)
-  
+
   if [ -n "$to_remove" ]; then
     # Convert newlines to spaces for pacman -Rns
     to_remove=$(echo "$to_remove" | tr '\n' ' ')
@@ -113,20 +113,20 @@ remove_tier() {
     if [[ "$CLEAN_REMNANTS" =~ ^[Yy]$ ]]; then
       local user_dir="/home/$target_user"
       echo "Cleaning remnants in $user_dir..."
-      
+
       # Safe cleanup using find to avoid string interpolation vulnerabilities
       for prefix in plasma kde kwin dolphinrc konsolerc arkrc gwenviewrc; do
         sudo find "$user_dir/.config" -maxdepth 1 -name "${prefix}*" -exec rm -rf {} + 2>/dev/null || true
       done
-      
+
       for prefix in plasma dolphin konsole ark gwenview; do
         sudo find "$user_dir/.local/share" -maxdepth 1 -name "${prefix}*" -exec rm -rf {} + 2>/dev/null || true
       done
-      
+
       for prefix in plasma kde kwin; do
         sudo find "$user_dir/.cache" -maxdepth 1 -name "${prefix}*" -exec rm -rf {} + 2>/dev/null || true
       done
-      
+
       echo "Remnants safely removed."
     else
       echo "Keeping user configurations."
