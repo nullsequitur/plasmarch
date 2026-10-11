@@ -153,16 +153,19 @@ prompt_checklist_cli() {
 
     local input=""
     read -r -p "Enter numbers to toggle, 'a' for all, 'n' for none, or press [Enter] to confirm: " input || true
-    input=$(echo "$input" | tr -d '[:space:]')
+    local clean_input
+    clean_input=$(echo "$input" | tr -d '[:space:]')
 
-    if [[ -z "$input" ]]; then
+    if [[ -z "$clean_input" ]]; then
       break
-    elif [[ "$input" =~ ^[Aa]$ ]]; then
+    elif [[ "$clean_input" =~ ^[Aa]$ ]]; then
       for ((i=0; i<count; i++)); do states[i]="ON"; done
-    elif [[ "$input" =~ ^[Nn]$ ]]; then
+    elif [[ "$clean_input" =~ ^[Nn]$ ]]; then
       for ((i=0; i<count; i++)); do states[i]="OFF"; done
     else
-      IFS=',' read -ra nums <<< "$input"
+      # Support both comma and space-separated numbers (e.g. '1,3' or '1 3')
+      local nums=()
+      read -ra nums <<< "$(echo "$input" | tr ',' ' ')"
       for num in "${nums[@]}"; do
         if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 && num <= count )); then
           local idx=$((num - 1))
