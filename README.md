@@ -52,7 +52,14 @@ chmod +x installer.sh
    - Queries `pacman -Qq` before rendering the checklist. Any application already present on the host system (e.g., Firefox) is tagged with `(installed)` so you know it will not require extra downloads or disk space.
 4. **Targeted Package Installation:**
    - Executes `sudo pacman -S --needed` with Tier 1 core packages, user-selected Tier 2 applications, and Tier 3 system daemons.
-5. **TTY Autostart Configuration:**
+5. **Curated Desktop Preset Seeding:**
+   - Prompts during setup: *"Do you want to apply curated desktop presets (Breeze Dark, pinned taskbar) for <user>? (Y/n)"*.
+   - Deploys an out-of-the-box configuration baseline:
+     - **Appearance:** Global Breeze Dark theme (`kdeglobals`, `plasmarc`).
+     - **Taskbar:** Pinned applications ordered sequentially: **Konsole**, **Dolphin**, **Firefox**.
+     - **Dolphin File Manager:** Pre-configured enhanced preview thumbnails (images, video, audio, PDFs, archives).
+   - Enforces user file ownership via `chown -R <user>:<user>`.
+6. **TTY Autostart Configuration:**
    - Prompts to configure automated Wayland launch for the target user.
    - Detects the target user's shell profile (`.bash_profile`, `.profile`, or `.zprofile`).
    - Injects an idempotent launch block guarded by `XDG_VTNR=1`:
@@ -123,6 +130,7 @@ The test suite validates:
 6. **TUI Checklist Engine:** Default confirmation, single and multi-item toggling (`1, 3`), select-all (`a`), and select-none (`n`) operations in pure-Bash fallback mode.
 7. **Selective Removal:** Verifying that Tier 1 is purged, selected Tier 2 apps (`dolphin`) are removed, unselected Tier 2 apps (`firefox`) are strictly preserved, and Tier 3 daemons are never touched.
 8. **Categorized Installation:** Verifying installation queues, default selections, and detection of host pre-installed packages.
+9. **User Configuration Presets:** Verifying template deployment, Breeze Dark scheme, sequential taskbar pinning (`konsole,dolphin,firefox`), enhanced Dolphin previews, and `chown -R` permission enforcement.
 
 ---
 
@@ -130,7 +138,17 @@ The test suite validates:
 
 ```text
 PlasmArch/
+├── .github/
+│   └── workflows/
+│       └── test.yml      # CI workflow (Ubuntu & Arch Linux container)
 ├── installer.sh          # Main entrypoint script (install | remove)
+├── presets/
+│   └── curated/          # Out-of-the-box user configuration templates
+│       └── .config/
+│           ├── dolphinrc
+│           ├── kdeglobals
+│           ├── plasma-org.kde.plasma.desktop-appletsrc
+│           └── plasmarc
 ├── README.md             # Project documentation and architectural overview
 └── tests/
     └── test_installer.sh # Isolated mock unit test suite
