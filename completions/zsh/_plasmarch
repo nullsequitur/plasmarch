@@ -1,0 +1,69 @@
+#compdef plasmarch installer.sh ./installer.sh
+
+_plasmarch_get_users() {
+  local -a users
+  if (( $+commands[getent] )); then
+    users=(${(f)"$(getent passwd | awk -F: '$3 >= 1000 && $1 != "nobody" {print $1}')"})
+  elif [[ -f /etc/passwd ]]; then
+    users=(${(f)"$(awk -F: '$3 >= 1000 && $1 != "nobody" {print $1}' /etc/passwd 2>/dev/null)"})
+  fi
+  _describe -t users 'system user' users
+}
+
+_plasmarch_get_presets() {
+  local -a preset_dirs preset_names
+  local user_dir="${PLASMARCH_USER_PRESETS_DIR:-$HOME/.config/plasmarch/presets}"
+  [[ -d "$user_dir" ]] && preset_dirs+=("$user_dir")
+
+  if [[ -n "${PLASMARCH_SYSTEM_PRESETS_DIR:-}" ]]; then
+    preset_dirs+=("$PLASMARCH_SYSTEM_PRESETS_DIR")
+  else
+    [[ -d "./presets" ]] && preset_dirs+=("./presets")
+    [[ -d "/usr/share/plasmarch/presets" ]] && preset_dirs+=("/usr/share/plasmarch/presets")
+    [[ -d "/usr/local/share/plasmarch/presets" ]] && preset_dirs+=("/usr/local/share/plasmarch/presets")
+  fi
+
+  for d in $preset_dirs; do
+    if [[ -d "$d" ]]; then
+      for sub in "$d"/*(N/); do
+        local bname="${sub:t}"
+        [[ "$bname" != .* ]] && preset_names+=("$bname")
+      done
+    fi
+  done
+
+  preset_names=(${(u)preset_names})
+  _describe -t presets 'desktop preset' preset_names
+}
+
+_plasmarch() {
+  local context state state_descr line
+  typeset -A opt_args
+
+  _arguments -s -S \
+    '(-i --install -r --remove)'{-i,--install}'[Install KDE Plasma for the specified user]' \
+    '(-i --install -r --remove)'{-r,--remove}'[Remove KDE Plasma desktop environment]' \
+    '(-u --user)'{-u,--user}'[Specify target username (UID >= 1000)]:user:_plasmarch_get_users' \
+    '(-p --preset)'{-p,--preset}'[Specify desktop preset profile]:preset:_plasmarch_get_presets' \
+    '(-y --yes --non-interactive)'{-y,--yes,--non-interactive}'[Non-interactive unattended mode with default selections]' \
+    '(-d --dry-run)'{-d,--dry-run}'[Dry run simulation mode (no system modifications)]' \
+    '--list-presets[List all available desktop preset profiles]' \
+    '(-h --help)'{-h,--help}'[Display usage help and options]' \
+    '(-v --version)'{-v,--version}'[Display version information]' \
+    '1:command:->action' \
+    && return 0
+
+  case "$state" in
+    action)
+      local -a subcommands
+      subcommands=(
+        'install:Install KDE Plasma for the target user'
+        'remove:Remove KDE Plasma desktop environment'
+        'list-presets:List available desktop preset profiles'
+      )
+      _describe -t commands 'command' subcommands
+      ;;
+  esac
+}
+
+_plasmarch "$@"

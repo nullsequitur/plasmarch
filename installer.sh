@@ -55,15 +55,22 @@ readonly LAYER3=(
 readonly AUTOSTART_START="# --- KDE PLASMA AUTOSTART ---"
 readonly AUTOSTART_END="# --- END KDE PLASMA AUTOSTART ---"
 readonly SCRIPT_DIR="${PLASMARCH_SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-readonly SYSTEM_PRESETS_DIR="$SCRIPT_DIR/presets"
+
+get_system_presets_dir() {
+  if [[ -n "${PLASMARCH_SYSTEM_PRESETS_DIR:-}" ]]; then
+    echo "$PLASMARCH_SYSTEM_PRESETS_DIR"
+  elif [[ -d "$SCRIPT_DIR/presets" ]]; then
+    echo "$SCRIPT_DIR/presets"
+  else
+    echo "/usr/share/plasmarch/presets"
+  fi
+}
+
+readonly SYSTEM_PRESETS_DIR="$(get_system_presets_dir)"
 readonly CURATED_PRESETS_DIR="$SYSTEM_PRESETS_DIR/curated/.config"
 
 get_user_presets_dir() {
   echo "${PLASMARCH_USER_PRESETS_DIR:-$HOME/.config/plasmarch/presets}"
-}
-
-get_system_presets_dir() {
-  echo "${PLASMARCH_SYSTEM_PRESETS_DIR:-$SCRIPT_DIR/presets}"
 }
 
 # ==========================================
