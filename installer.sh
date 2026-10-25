@@ -64,6 +64,8 @@ readonly PLASMARCH_VERSION="0.2.0"
 CLI_ACTION=""
 CLI_USER=""
 CLI_PRESET="curated"
+USER_SPECIFIED=0
+PRESET_SPECIFIED=0
 NON_INTERACTIVE=0
 DRY_RUN=0
 
@@ -148,13 +150,37 @@ get_user_profile() {
   esac
 }
 
+validate_preset() {
+  local preset="${1:-}"
+  if [[ -z "$preset" ]]; then
+    echo "Error: Preset name cannot be empty." >&2
+    return 1
+  fi
+
+  if [[ "$preset" =~ \.\. || "$preset" =~ / || "$preset" =~ \\ ]]; then
+    echo "Error: Invalid preset name '$preset'. Directory traversal characters are not permitted." >&2
+    return 1
+  fi
+
+  if [[ ! "$preset" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+    echo "Error: Invalid preset name format '$preset'. Preset names must start with an alphanumeric character and contain only letters, numbers, underscores, or hyphens." >&2
+    return 1
+  fi
+
+  if ! resolve_preset_dir "$preset" &>/dev/null; then
+    echo "Error: Preset '$preset' does not exist." >&2
+    return 1
+  fi
+
+  return 0
+}
+
 resolve_preset_dir() {
   local preset="${1:-curated}"
 
-  # Direct directory path check
-  if [[ -d "$preset" ]]; then
-    echo "$preset"
-    return 0
+  # Reject path traversal
+  if [[ "$preset" =~ \.\. || "$preset" =~ \\ ]]; then
+    return 1
   fi
 
   # Project presets directory with .config
@@ -178,6 +204,12 @@ resolve_preset_dir() {
     return 0
   fi
 
+  # Direct directory path check (only if safe path, not traversal or system root)
+  if [[ -d "$preset" && ! "$preset" =~ \.\. && "$preset" != "/" && "$preset" != "/etc"* ]]; then
+    echo "$preset"
+    return 0
+  fi
+
   return 1
 }
 
@@ -187,10 +219,15 @@ apply_user_preset() {
   local preset_arg="${3:-${CLI_PRESET:-curated}}"
   local preset_dir=""
 
-  if [[ -d "$preset_arg" ]]; then
-    preset_dir="$preset_arg"
-  elif preset_dir=$(resolve_preset_dir "$preset_arg" 2>/dev/null); then
+  if [[ "$preset_arg" =~ \.\. || "$preset_arg" =~ \\ ]]; then
+    echo "Error: Directory traversal is not permitted in preset path." >&2
+    return 1
+  fi
+
+  if preset_dir=$(resolve_preset_dir "$preset_arg" 2>/dev/null); then
     : # successfully resolved
+  elif [[ -d "$preset_arg" && "$preset_arg" != "/" && "$preset_arg" != "/etc"* ]]; then
+    preset_dir="$preset_arg"
   else
     preset_dir="$preset_arg"
   fi
@@ -414,7 +451,11 @@ install_tier() {
 
   echo -e "\nSelected GUI applications: ${selected_layer2[*]:-(none)}"
 
-  local install_queue=("${LAYER1[@]}" "${selected_layer2[@]:-}" "${LAYER3[@]}")
+  local install_queue=("${LAYER1[@]}")
+  if (( ${#selected_layer2[@]} > 0 )); then
+    install_queue+=("${selected_layer2[@]}")
+  fi
+  install_queue+=("${LAYER3[@]}")
 
   echo -e "\n--- Installing selected packages ---"
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
@@ -664,74 +705,124 @@ parse_args() {
   while (( $# > 0 )); do
     case "$1" in
       -i|--install|install)
-        if [[ -n "$CLI_ACTION" && "$CLI_ACTION" != "install" ]]; then
-          echo "Error: Conflicting actions specified ('$CLI_ACTION' and 'install')." >&2
+        if [[ -n "$CLI_ACTION" ]]; then
+          if [[ "$CLI_ACTION" != "install" ]]; then
+            echo "Error: Conflicting actions specified ('$CLI_ACTION' and 'install')." >&2
+          else
+            echo "Error: Duplicate action '$1' specified." >&2
+          fi
           exit 1
         fi
         CLI_ACTION="install"
         shift
         ;;
       -r|--remove|remove)
-        if [[ -n "$CLI_ACTION" && "$CLI_ACTION" != "remove" ]]; then
-          echo "Error: Conflicting actions specified ('$CLI_ACTION' and 'remove')." >&2
+        if [[ -n "$CLI_ACTION" ]]; then
+          if [[ "$CLI_ACTION" != "remove" ]]; then
+            echo "Error: Conflicting actions specified ('$CLI_ACTION' and 'remove')." >&2
+          else
+            echo "Error: Duplicate action '$1' specified." >&2
+          fi
           exit 1
         fi
         CLI_ACTION="remove"
         shift
         ;;
       -u|--user)
+        if [[ "$USER_SPECIFIED" -eq 1 ]]; then
+          echo "Error: Duplicate option '$1' specified." >&2
+          exit 1
+        fi
         if (( $# < 2 )) || [[ -z "$2" ]] || [[ "$2" =~ ^- ]]; then
           echo "Error: Option '$1' requires a valid username argument." >&2
           exit 1
         fi
         CLI_USER="$2"
+        USER_SPECIFIED=1
         shift 2
         ;;
       --user=*)
-        CLI_USER="${1#*=}"
-        if [[ -z "$CLI_USER" ]]; then
-          echo "Error: Option '--user' requires a non-empty username argument." >&2
+        if [[ "$USER_SPECIFIED" -eq 1 ]]; then
+          echo "Error: Duplicate option '--user' specified." >&2
           exit 1
         fi
+        local user_val="${1#*=}"
+        if [[ -z "$user_val" ]]; then
+          echo "Error: Option '--user' requires a valid username argument." >&2
+          exit 1
+        fi
+        CLI_USER="$user_val"
+        USER_SPECIFIED=1
         shift
         ;;
       -u=*)
-        CLI_USER="${1#*=}"
-        if [[ -z "$CLI_USER" ]]; then
-          echo "Error: Option '-u' requires a non-empty username argument." >&2
+        if [[ "$USER_SPECIFIED" -eq 1 ]]; then
+          echo "Error: Duplicate option '-u' specified." >&2
           exit 1
         fi
+        local user_val="${1#*=}"
+        if [[ -z "$user_val" ]]; then
+          echo "Error: Option '-u' requires a valid username argument." >&2
+          exit 1
+        fi
+        CLI_USER="$user_val"
+        USER_SPECIFIED=1
         shift
         ;;
       -p|--preset)
+        if [[ "$PRESET_SPECIFIED" -eq 1 ]]; then
+          echo "Error: Duplicate option '$1' specified." >&2
+          exit 1
+        fi
         if (( $# < 2 )) || [[ -z "$2" ]] || [[ "$2" =~ ^- ]]; then
           echo "Error: Option '$1' requires a valid preset name argument." >&2
           exit 1
         fi
         CLI_PRESET="$2"
+        PRESET_SPECIFIED=1
         shift 2
         ;;
       --preset=*)
-        CLI_PRESET="${1#*=}"
-        if [[ -z "$CLI_PRESET" ]]; then
-          echo "Error: Option '--preset' requires a non-empty preset name argument." >&2
+        if [[ "$PRESET_SPECIFIED" -eq 1 ]]; then
+          echo "Error: Duplicate option '--preset' specified." >&2
           exit 1
         fi
+        local preset_val="${1#*=}"
+        if [[ -z "$preset_val" ]]; then
+          echo "Error: Option '--preset' requires a valid preset name argument." >&2
+          exit 1
+        fi
+        CLI_PRESET="$preset_val"
+        PRESET_SPECIFIED=1
         shift
         ;;
       -p=*)
-        CLI_PRESET="${1#*=}"
-        if [[ -z "$CLI_PRESET" ]]; then
-          echo "Error: Option '-p' requires a non-empty preset name argument." >&2
+        if [[ "$PRESET_SPECIFIED" -eq 1 ]]; then
+          echo "Error: Duplicate option '-p' specified." >&2
           exit 1
         fi
+        local preset_val="${1#*=}"
+        if [[ -z "$preset_val" ]]; then
+          echo "Error: Option '-p' requires a valid preset name argument." >&2
+          exit 1
+        fi
+        CLI_PRESET="$preset_val"
+        PRESET_SPECIFIED=1
         shift
         ;;
       -y|--yes|--non-interactive)
+        if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+          echo "Error: Duplicate option '$1' specified." >&2
+          exit 1
+        fi
         NON_INTERACTIVE=1
         shift
         ;;
       -d|--dry-run)
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+          echo "Error: Duplicate option '$1' specified." >&2
+          exit 1
+        fi
         DRY_RUN=1
         shift
         ;;
@@ -764,6 +855,13 @@ parse_args() {
       exit 1
     fi
   fi
+
+  # Validate preset if specified or default
+  if [[ -n "$CLI_PRESET" ]]; then
+    if ! validate_preset "$CLI_PRESET"; then
+      exit 1
+    fi
+  fi
 }
 
 run_action() {
@@ -789,19 +887,34 @@ run_action() {
 }
 
 # ------------------------------------------------------------------------------
+# Script Execution Guard (Direct execution vs Sourcing)
+# ------------------------------------------------------------------------------
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  RUN_MAIN=1
+else
+  RUN_MAIN=0
+fi
+
+# ------------------------------------------------------------------------------
 # Script Entry Point (with backward-compatible sed pattern preservation)
 # ------------------------------------------------------------------------------
 if [ "${1:-}" = "install" ]; then
-  CLI_ACTION="install"
-  shift || true
-  parse_args "$@"
-  run_action
+  if [[ "$RUN_MAIN" -eq 1 ]]; then
+    CLI_ACTION="install"
+    shift || true
+    parse_args "$@"
+    run_action
+  fi
 elif [ "${1:-}" = "remove" ]; then
-  CLI_ACTION="remove"
-  shift || true
-  parse_args "$@"
-  run_action
+  if [[ "$RUN_MAIN" -eq 1 ]]; then
+    CLI_ACTION="remove"
+    shift || true
+    parse_args "$@"
+    run_action
+  fi
 else
-  parse_args "$@"
-  run_action
+  if [[ "$RUN_MAIN" -eq 1 ]]; then
+    parse_args "$@"
+    run_action
+  fi
 fi

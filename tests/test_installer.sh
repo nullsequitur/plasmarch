@@ -659,6 +659,128 @@ test_cli_argument_parsing() {
   else
     fail "CLI positional remove with flags" "Got rc=$pos_remove_rc: $pos_remove_out"
   fi
+
+  # 10. Direct sourcing does not trigger main execution
+  local source_rc=0
+  local source_out=""
+  source_out=$(bash -c "source '$INSTALLER_SCRIPT' && declare -f validate_user >/dev/null && echo SOURCED_OK" 2>&1) || source_rc=$?
+  if [[ $source_rc -eq 0 && "$source_out" == "SOURCED_OK" ]]; then
+    pass "Direct sourcing loads functions safely without executing main action"
+  else
+    fail "Direct sourcing guard" "Got rc=$source_rc: $source_out"
+  fi
+
+  # 11. Security: Path traversal & Malformed Presets
+  local traversal_out1="" traversal_rc1=0
+  traversal_out1=$("$INSTALLER_SCRIPT" -i -p "../../etc" 2>&1) || traversal_rc1=$?
+  if [[ $traversal_rc1 -ne 0 && "$traversal_out1" =~ "Directory traversal characters are not permitted" ]]; then
+    pass "CLI rejects relative path traversal in preset name ('../../etc')"
+  else
+    fail "Preset path traversal" "Got rc=$traversal_rc1: $traversal_out1"
+  fi
+
+  local traversal_out2="" traversal_rc2=0
+  traversal_out2=$("$INSTALLER_SCRIPT" -i -p "/etc" 2>&1) || traversal_rc2=$?
+  if [[ $traversal_rc2 -ne 0 && "$traversal_out2" =~ "Directory traversal characters are not permitted" ]]; then
+    pass "CLI rejects absolute path in preset name ('/etc')"
+  else
+    fail "Preset absolute path" "Got rc=$traversal_rc2: $traversal_out2"
+  fi
+
+  local malformed_out="" malformed_rc=0
+  malformed_out=$("$INSTALLER_SCRIPT" -i -p "malicious; echo fail" 2>&1) || malformed_rc=$?
+  if [[ $malformed_rc -ne 0 && "$malformed_out" =~ "Invalid preset name format" ]]; then
+    pass "CLI rejects malformed preset names with shell injection characters"
+  else
+    fail "Malformed preset format" "Got rc=$malformed_rc: $malformed_out"
+  fi
+
+  local dash_preset_out="" dash_preset_rc=0
+  dash_preset_out=$("$INSTALLER_SCRIPT" -i -p "--danger" 2>&1) || dash_preset_rc=$?
+  if [[ $dash_preset_rc -ne 0 ]]; then
+    pass "CLI rejects preset names starting with flags ('--danger')"
+  else
+    fail "Preset flag injection" "Got rc=$dash_preset_rc: $dash_preset_out"
+  fi
+
+  # 12. Non-existent preset fails early in CLI parsing
+  local nonexist_preset_out="" nonexist_preset_rc=0
+  nonexist_preset_out=$("$INSTALLER_SCRIPT" -i -p "nonexistent_preset_99" 2>&1) || nonexist_preset_rc=$?
+  if [[ $nonexist_preset_rc -ne 0 && "$nonexist_preset_out" =~ "Preset 'nonexistent_preset_99' does not exist" ]]; then
+    pass "CLI rejects nonexistent preset profile early in argument parsing"
+  else
+    fail "Nonexistent preset rejection" "Got rc=$nonexist_preset_rc: $nonexist_preset_out"
+  fi
+
+  # 13. Duplicate flags detection
+  local dup_action_out="" dup_action_rc=0
+  dup_action_out=$("$INSTALLER_SCRIPT" -i -i 2>&1) || dup_action_rc=$?
+  if [[ $dup_action_rc -ne 0 && "$dup_action_out" =~ "Duplicate action '-i' specified" ]]; then
+    pass "CLI rejects duplicate action flags ('-i -i')"
+  else
+    fail "Duplicate action -i" "Got rc=$dup_action_rc: $dup_action_out"
+  fi
+
+  local dup_remove_out="" dup_remove_rc=0
+  dup_remove_out=$("$INSTALLER_SCRIPT" -r -r 2>&1) || dup_remove_rc=$?
+  if [[ $dup_remove_rc -ne 0 && "$dup_remove_out" =~ "Duplicate action '-r' specified" ]]; then
+    pass "CLI rejects duplicate action flags ('-r -r')"
+  else
+    fail "Duplicate action -r" "Got rc=$dup_remove_rc: $dup_remove_out"
+  fi
+
+  local dup_user_out="" dup_user_rc=0
+  dup_user_out=$("$INSTALLER_SCRIPT" -i -u "$current_user" -u "$current_user" 2>&1) || dup_user_rc=$?
+  if [[ $dup_user_rc -ne 0 && "$dup_user_out" =~ "Duplicate option '-u' specified" ]]; then
+    pass "CLI rejects duplicate user flags ('-u ... -u ...')"
+  else
+    fail "Duplicate user flag" "Got rc=$dup_user_rc: $dup_user_out"
+  fi
+
+  local dup_preset_out="" dup_preset_rc=0
+  dup_preset_out=$("$INSTALLER_SCRIPT" -i -p curated -p curated 2>&1) || dup_preset_rc=$?
+  if [[ $dup_preset_rc -ne 0 && "$dup_preset_out" =~ "Duplicate option '-p' specified" ]]; then
+    pass "CLI rejects duplicate preset flags ('-p ... -p ...')"
+  else
+    fail "Duplicate preset flag" "Got rc=$dup_preset_rc: $dup_preset_out"
+  fi
+
+  local dup_dry_out="" dup_dry_rc=0
+  dup_dry_out=$("$INSTALLER_SCRIPT" -i -d -d 2>&1) || dup_dry_rc=$?
+  if [[ $dup_dry_rc -ne 0 && "$dup_dry_out" =~ "Duplicate option '-d' specified" ]]; then
+    pass "CLI rejects duplicate dry-run flags ('-d -d')"
+  else
+    fail "Duplicate dry-run flag" "Got rc=$dup_dry_rc: $dup_dry_out"
+  fi
+
+  local dup_yes_out="" dup_yes_rc=0
+  dup_yes_out=$("$INSTALLER_SCRIPT" -i -y -y 2>&1) || dup_yes_rc=$?
+  if [[ $dup_yes_rc -ne 0 && "$dup_yes_out" =~ "Duplicate option '-y' specified" ]]; then
+    pass "CLI rejects duplicate unattended flags ('-y -y')"
+  else
+    fail "Duplicate unattended flag" "Got rc=$dup_yes_rc: $dup_yes_out"
+  fi
+
+  # 14. Empty string arguments for flags
+  local empty_user_out1="" empty_user_rc1=0
+  empty_user_out1=$("$INSTALLER_SCRIPT" -i --user="" 2>&1) || empty_user_rc1=$?
+  local empty_user_out2="" empty_user_rc2=0
+  empty_user_out2=$("$INSTALLER_SCRIPT" -i -u "" 2>&1) || empty_user_rc2=$?
+  if [[ $empty_user_rc1 -ne 0 && $empty_user_rc2 -ne 0 ]]; then
+    pass "CLI rejects empty user string in both --user='' and -u ''"
+  else
+    fail "Empty user argument" "Got rc1=$empty_user_rc1, rc2=$empty_user_rc2"
+  fi
+
+  local empty_preset_out1="" empty_preset_rc1=0
+  empty_preset_out1=$("$INSTALLER_SCRIPT" -i --preset="" 2>&1) || empty_preset_rc1=$?
+  local empty_preset_out2="" empty_preset_rc2=0
+  empty_preset_out2=$("$INSTALLER_SCRIPT" -i -p "" 2>&1) || empty_preset_rc2=$?
+  if [[ $empty_preset_rc1 -ne 0 && $empty_preset_rc2 -ne 0 ]]; then
+    pass "CLI rejects empty preset string in both --preset='' and -p ''"
+  else
+    fail "Empty preset argument" "Got rc1=$empty_preset_rc1, rc2=$empty_preset_rc2"
+  fi
 }
 
 # ------------------------------------------------------------------------------
