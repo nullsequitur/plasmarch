@@ -1,0 +1,56 @@
+name: Test Suite
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test-ubuntu:
+    name: Test on Ubuntu (Latest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set script permissions
+        run: chmod +x tests/test_installer.sh installer.sh
+
+      - name: Run test suite
+        run: ./tests/test_installer.sh
+
+  test-archlinux:
+    name: Test on Arch Linux (Container)
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install prerequisites in container
+        run: |
+          # Synchronize pacman repositories and install git and essential tools
+          pacman -Sy --noconfirm git sudo bash
+
+      - name: Create non-root test user
+        run: |
+          # Create regular user with UID >= 1000 and valid home directory
+          useradd -m -u 1001 -s /bin/bash testuser
+          # Allow passwordless sudo for test execution
+          echo "testuser ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/testuser
+          chmod 0440 /etc/sudoers.d/testuser
+          # Ensure testuser owns the workspace directory
+          chown -R testuser:testuser "$GITHUB_WORKSPACE"
+          # Configure safe git directory for both root and testuser
+          git config --system --add safe.directory "$GITHUB_WORKSPACE" || true
+
+      - name: Set script permissions and run test suite
+        run: |
+          chmod +x tests/test_installer.sh installer.sh
+          # Run test suite as non-root testuser
+          su - testuser -c "cd '$GITHUB_WORKSPACE' && ./tests/test_installer.sh"
