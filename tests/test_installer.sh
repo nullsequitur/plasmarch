@@ -515,10 +515,156 @@ test_user_presets() {
 }
 
 # ------------------------------------------------------------------------------
-# Test Suite 10: Non-Interactive CLI Engine & Argument Parser
+# ------------------------------------------------------------------------------
+# Test Suite 10: Dynamic Preset Catalog & Discovery Engine
+# ------------------------------------------------------------------------------
+test_dynamic_preset_catalog() {
+  echo "Running Test Suite 10: Dynamic Preset Catalog & Discovery Engine..."
+
+  (
+    sudo() {
+      echo "SUDO_CALL: $*" >> "$SANDBOX_DIR/dyn_preset_sudo.log"
+      if [[ "$1" == "chown" || "$1" == "-v" ]]; then
+        return 0
+      fi
+      "$@"
+    }
+    export -f sudo
+
+    # 1. Test list_presets output for built-in system presets
+    local list_out
+    list_out=$(list_presets)
+    if [[ "$list_out" =~ "curated" ]] && [[ "$list_out" =~ "minimal" ]]; then
+      pass "list_presets lists both curated and minimal presets"
+    else
+      fail "list_presets built-ins" "Expected curated and minimal in: $list_out"
+    fi
+
+    if [[ "$list_out" =~ "(system)" ]]; then
+      pass "list_presets correctly tags built-in presets as (system)"
+    else
+      fail "list_presets tags" "Missing (system) tag in: $list_out"
+    fi
+
+    # 2. Test direct execution of --list-presets flag
+    local cli_out
+    if cli_out=$("$INSTALLER_SCRIPT" --list-presets); then
+      if [[ "$cli_out" =~ "Available Desktop Presets:" ]] && [[ "$cli_out" =~ "curated" ]]; then
+        pass "installer.sh --list-presets exits 0 and displays catalog"
+      else
+        fail "installer.sh --list-presets" "Unexpected catalog output: $cli_out"
+      fi
+    else
+      fail "installer.sh --list-presets" "Failed with exit code $?"
+    fi
+
+    # 3. Test minimal preset deployment
+    local min_home="$SANDBOX_DIR/min_user_home"
+    mkdir -p "$min_home"
+    rm -f "$SANDBOX_DIR/dyn_preset_sudo.log"
+    apply_preset "testuser" "$min_home" "minimal" >/dev/null
+
+    local min_cfg="$min_home/.config"
+    if [[ -f "$min_cfg/kdeglobals" ]] && grep -q "ColorScheme=BreezeDark" "$min_cfg/kdeglobals"; then
+      pass "apply_preset minimal deploys dark theme in kdeglobals"
+    else
+      fail "apply_preset minimal kdeglobals" "Missing kdeglobals"
+    fi
+
+    local min_applets="$min_cfg/plasma-org.kde.plasma.desktop-appletsrc"
+    if [[ -f "$min_applets" ]] && grep -q "launchers=applications:org.kde.konsole.desktop" "$min_applets" && ! grep -q "firefox" "$min_applets"; then
+      pass "apply_preset minimal provisions lean taskbar with terminal launcher only"
+    else
+      fail "apply_preset minimal applets" "Did not find expected minimal launchers in $min_applets"
+    fi
+
+    if grep -q "chown -R testuser:testuser" "$SANDBOX_DIR/dyn_preset_sudo.log"; then
+      pass "apply_preset minimal enforces ownership via chown -R"
+    else
+      fail "apply_preset minimal chown" "Missing chown in: $(cat "$SANDBOX_DIR/dyn_preset_sudo.log" 2>/dev/null || echo 'empty')"
+    fi
+
+    # 4. Test user-level custom presets discovery & deployment (~/.config/plasmarch/presets/<name>/)
+    local fake_user_presets="$SANDBOX_DIR/user_presets"
+    mkdir -p "$fake_user_presets/nord/.config"
+    echo "ColorScheme=NordicDark" > "$fake_user_presets/nord/.config/kdeglobals"
+    echo "Nordic Arctic Ice dark theme" > "$fake_user_presets/nord/description.txt"
+
+    export PLASMARCH_USER_PRESETS_DIR="$fake_user_presets"
+
+    local user_list
+    user_list=$(list_presets)
+    if [[ "$user_list" =~ "nord" ]] && [[ "$user_list" =~ "Nordic Arctic Ice dark theme" ]] && [[ "$user_list" =~ "(user)" ]]; then
+      pass "list_presets discovers custom presets in user config directory with (user) tag"
+    else
+      fail "list_presets user discovery" "Expected nord (user) in: $user_list"
+    fi
+
+    local nord_home="$SANDBOX_DIR/nord_user_home"
+    mkdir -p "$nord_home"
+    apply_preset "testuser" "$nord_home" "nord" >/dev/null
+
+    if [[ -f "$nord_home/.config/kdeglobals" ]] && grep -q "ColorScheme=NordicDark" "$nord_home/.config/kdeglobals"; then
+      pass "apply_preset resolves and deploys user custom preset"
+    else
+      fail "apply_preset user preset" "Missing or incorrect custom preset files"
+    fi
+
+    # 5. Test user-level preset overrides system preset of same name
+    mkdir -p "$fake_user_presets/curated/.config"
+    echo "ColorScheme=UserOverriddenCurated" > "$fake_user_presets/curated/.config/kdeglobals"
+
+    local override_home="$SANDBOX_DIR/override_user_home"
+    mkdir -p "$override_home"
+    apply_preset "testuser" "$override_home" "curated" >/dev/null
+
+    if [[ -f "$override_home/.config/kdeglobals" ]] && grep -q "ColorScheme=UserOverriddenCurated" "$override_home/.config/kdeglobals"; then
+      pass "apply_preset prioritizes user-level preset over system preset of the same name"
+    else
+      fail "apply_preset user override" "Did not prioritize user preset"
+    fi
+
+    # 6. Test invalid preset error handling with available presets listed
+    local invalid_err=""
+    if invalid_err=$(apply_preset "testuser" "$min_home" "nonexistent_profile_xyz" 2>&1); then
+      fail "apply_preset invalid" "Expected non-zero exit for non-existent preset"
+    else
+      if [[ "$invalid_err" =~ "Error: Preset 'nonexistent_profile_xyz' not found." ]] && [[ "$invalid_err" =~ "Available presets:" ]]; then
+        pass "apply_preset outputs clear error with available preset list and exits 1"
+      else
+        fail "apply_preset invalid error output" "Unexpected error message: $invalid_err"
+      fi
+    fi
+
+    # 7. Test install_tier with PLASMARCH_PRESET=minimal
+    local fake_target_home="$SANDBOX_DIR/fake_target_minimal_home"
+    mkdir -p "$fake_target_home"
+    get_user_home() { echo "$fake_target_home"; }
+    validate_user() { return 0; }
+    get_user_profile() { echo "$fake_target_home/.bash_profile"; }
+    pacman() { return 0; }
+    export -f get_user_home validate_user get_user_profile pacman
+
+    # Reset PLASMARCH_USER_PRESETS_DIR so it doesn't interfere
+    unset PLASMARCH_USER_PRESETS_DIR
+    export PLASMARCH_PRESET="minimal"
+
+    printf "myuser\nN\nY\n\n" | install_tier > "$SANDBOX_DIR/install_minimal_run.log" 2>&1 || true
+
+    local deployed_appletsrc="$fake_target_home/.config/plasma-org.kde.plasma.desktop-appletsrc"
+    if [[ -f "$deployed_appletsrc" ]] && grep -q "launchers=applications:org.kde.konsole.desktop" "$deployed_appletsrc" && ! grep -q "firefox" "$deployed_appletsrc"; then
+      pass "install_tier successfully deploys minimal preset when specified"
+    else
+      fail "install_tier minimal preset" "Minimal preset not deployed. Log: $(cat "$SANDBOX_DIR/install_minimal_run.log" 2>/dev/null || echo 'empty')"
+    fi
+  )
+}
+
+# ------------------------------------------------------------------------------
+# Test Suite 11: Non-Interactive CLI Engine & Argument Parser
 # ------------------------------------------------------------------------------
 test_cli_argument_parsing() {
-  echo "Running Test Suite 10: Non-Interactive CLI Engine & Argument Parser..."
+  echo "Running Test Suite 11: Non-Interactive CLI Engine & Argument Parser..."
 
   # 1. Version flag
   local ver_out1 ver_out2
@@ -799,6 +945,7 @@ test_tui_checklist
 test_selective_layer2_removal
 test_categorized_install_workflow
 test_user_presets
+test_dynamic_preset_catalog
 test_cli_argument_parsing
 
 PASS_COUNT=$(grep -c "^PASS$" "$SANDBOX_DIR/test_results.log" 2>/dev/null || true)
