@@ -8,6 +8,7 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALLER_SCRIPT="$PROJECT_ROOT/installer.sh"
+export PLASMARCH_SCRIPT_DIR="$PROJECT_ROOT"
 
 TEST_COUNT=0
 PASS_COUNT=0
@@ -427,6 +428,93 @@ test_categorized_install_workflow() {
 }
 
 # ------------------------------------------------------------------------------
+# Test Suite 9: Curated User Configuration Preset Seeding
+# ------------------------------------------------------------------------------
+test_user_presets() {
+  echo "Running Test Suite 9: Curated User Configuration Preset Seeding..."
+
+  (
+    local fake_home="$SANDBOX_DIR/fake_user_home"
+    mkdir -p "$fake_home"
+
+    sudo() {
+      echo "SUDO_CALL: $*" >> "$SANDBOX_DIR/preset_sudo.log"
+      if [[ "$1" == "chown" || "$1" == "-v" ]]; then
+        return 0
+      fi
+      "$@"
+    }
+    export -f sudo
+
+    # 1. Test missing preset directory handling
+    local err_out
+    if err_out=$(apply_user_preset "testuser" "$fake_home" "$SANDBOX_DIR/nonexistent_preset" 2>&1); then
+      fail "apply_user_preset nonexistent" "Expected error return code when preset dir is missing"
+    else
+      pass "apply_user_preset gracefully fails when preset directory is missing"
+    fi
+
+    # 2. Test successful preset deployment using actual presets/curated directory
+    rm -f "$SANDBOX_DIR/preset_sudo.log"
+    apply_user_preset "testuser" "$fake_home" >/dev/null
+
+    local cfg_dir="$fake_home/.config"
+    if [[ -f "$cfg_dir/kdeglobals" ]] && grep -q "ColorScheme=BreezeDark" "$cfg_dir/kdeglobals"; then
+      pass "apply_user_preset provisions BreezeDark in kdeglobals"
+    else
+      fail "apply_user_preset kdeglobals" "Missing or invalid kdeglobals"
+    fi
+
+    if [[ -f "$cfg_dir/plasmarc" ]] && grep -q "name=breeze-dark" "$cfg_dir/plasmarc"; then
+      pass "apply_user_preset provisions breeze-dark in plasmarc"
+    else
+      fail "apply_user_preset plasmarc" "Missing or invalid plasmarc"
+    fi
+
+    if [[ -f "$cfg_dir/dolphinrc" ]] && grep -q "PreviewSettings" "$cfg_dir/dolphinrc"; then
+      pass "apply_user_preset provisions enhanced preview settings in dolphinrc"
+    else
+      fail "apply_user_preset dolphinrc" "Missing or invalid dolphinrc"
+    fi
+
+    local appletsrc="$cfg_dir/plasma-org.kde.plasma.desktop-appletsrc"
+    if [[ -f "$appletsrc" ]] && grep -q "launchers=applications:org.kde.konsole.desktop,applications:org.kde.dolphin.desktop,applications:firefox.desktop" "$appletsrc"; then
+      pass "apply_user_preset pins taskbar apps (konsole, dolphin, firefox) in exact sequential order"
+    else
+      fail "apply_user_preset appletsrc" "Launchers order incorrect or file missing in $appletsrc"
+    fi
+
+    if grep -q "chown -R testuser:testuser" "$SANDBOX_DIR/preset_sudo.log"; then
+      pass "apply_user_preset enforces ownership on target user config directory"
+    else
+      fail "apply_user_preset ownership" "Expected chown -R in: $(cat "$SANDBOX_DIR/preset_sudo.log" 2>/dev/null || echo 'empty')"
+    fi
+
+    # 3. Test install_tier integrates preset application when user accepts
+    local fake_target_home="$SANDBOX_DIR/fake_target_user_home"
+    mkdir -p "$fake_target_home"
+    get_user_home() { echo "$fake_target_home"; }
+    validate_user() { return 0; }
+    get_user_profile() { echo "$fake_target_home/.bash_profile"; }
+    pacman() { return 0; }
+    export -f get_user_home validate_user get_user_profile pacman
+
+    # Inputs:
+    # 1. target user: "myuser"
+    # 2. TTY autostart: "N"
+    # 3. Presets: "Y"
+    # 4. Checklist: Enter
+    printf "myuser\nN\nY\n\n" | install_tier > "$SANDBOX_DIR/install_preset_run.log" 2>&1 || true
+
+    if [[ -f "$fake_target_home/.config/kdeglobals" ]] && grep -q "ColorScheme=BreezeDark" "$fake_target_home/.config/kdeglobals"; then
+      pass "install_tier successfully triggers apply_user_preset during target user setup"
+    else
+      fail "install_tier preset trigger" "Presets were not deployed during install_tier run. Log: $(cat "$SANDBOX_DIR/install_preset_run.log" 2>/dev/null || echo 'empty')"
+    fi
+  )
+}
+
+# ------------------------------------------------------------------------------
 # Run all suites
 # ------------------------------------------------------------------------------
 echo "=========================================================="
@@ -441,6 +529,7 @@ test_autostart_lifecycle
 test_tui_checklist
 test_selective_layer2_removal
 test_categorized_install_workflow
+test_user_presets
 
 PASS_COUNT=$(grep -c "^PASS$" "$SANDBOX_DIR/test_results.log" 2>/dev/null || true)
 FAIL_COUNT=$(grep -c "^FAIL$" "$SANDBOX_DIR/test_results.log" 2>/dev/null || true)
