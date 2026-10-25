@@ -57,6 +57,16 @@ readonly AUTOSTART_END="# --- END KDE PLASMA AUTOSTART ---"
 readonly SCRIPT_DIR="${PLASMARCH_SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 readonly CURATED_PRESETS_DIR="$SCRIPT_DIR/presets/curated/.config"
 
+# ==========================================
+# CLI & Engine Configuration
+# ==========================================
+readonly PLASMARCH_VERSION="0.2.0"
+CLI_ACTION=""
+CLI_USER=""
+CLI_PRESET="curated"
+NON_INTERACTIVE=0
+DRY_RUN=0
+
 check_privileges() {
   local current_uid="${PLASMARCH_TEST_EUID:-${EUID:-$(id -u)}}"
   if [[ "$current_uid" -eq 0 ]]; then
@@ -68,6 +78,10 @@ check_privileges() {
   if ! command -v sudo >/dev/null 2>&1; then
     echo "Error: 'sudo' command not found. Please install sudo." >&2
     exit 1
+  fi
+
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    return 0
   fi
 
   # Validate sudo access upfront
@@ -134,10 +148,52 @@ get_user_profile() {
   esac
 }
 
+resolve_preset_dir() {
+  local preset="${1:-curated}"
+
+  # Direct directory path check
+  if [[ -d "$preset" ]]; then
+    echo "$preset"
+    return 0
+  fi
+
+  # Project presets directory with .config
+  if [[ -d "$SCRIPT_DIR/presets/$preset/.config" ]]; then
+    echo "$SCRIPT_DIR/presets/$preset/.config"
+    return 0
+  fi
+
+  # Project presets directory direct
+  if [[ -d "$SCRIPT_DIR/presets/$preset" ]]; then
+    echo "$SCRIPT_DIR/presets/$preset"
+    return 0
+  fi
+
+  # User custom presets directory
+  if [[ -d "$HOME/.config/plasmarch/presets/$preset/.config" ]]; then
+    echo "$HOME/.config/plasmarch/presets/$preset/.config"
+    return 0
+  elif [[ -d "$HOME/.config/plasmarch/presets/$preset" ]]; then
+    echo "$HOME/.config/plasmarch/presets/$preset"
+    return 0
+  fi
+
+  return 1
+}
+
 apply_user_preset() {
   local target_user="$1"
   local user_home="$2"
-  local preset_dir="${3:-$CURATED_PRESETS_DIR}"
+  local preset_arg="${3:-${CLI_PRESET:-curated}}"
+  local preset_dir=""
+
+  if [[ -d "$preset_arg" ]]; then
+    preset_dir="$preset_arg"
+  elif preset_dir=$(resolve_preset_dir "$preset_arg" 2>/dev/null); then
+    : # successfully resolved
+  else
+    preset_dir="$preset_arg"
+  fi
 
   if [[ ! -d "$preset_dir" ]]; then
     echo "Warning: Preset directory '$preset_dir' not found. Skipping preset application." >&2
@@ -145,6 +201,14 @@ apply_user_preset() {
   fi
 
   local target_config="$user_home/.config"
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    echo "[DRY-RUN] Would execute: sudo mkdir -p $target_config"
+    echo "[DRY-RUN] Would execute: sudo cp -r $preset_dir/. $target_config/"
+    echo "[DRY-RUN] Would execute: sudo chown -R $target_user:$target_user $target_config"
+    echo -e "Applied curated desktop preset (\033[1;32mBreeze Dark, Pinned Taskbar, Enhanced Dolphin Previews\033[0m) for $target_user. (dry-run)"
+    return 0
+  fi
+
   sudo mkdir -p "$target_config"
   sudo cp -r "$preset_dir/." "$target_config/"
   sudo chown -R "$target_user:$target_user" "$target_config"
@@ -266,6 +330,10 @@ remove_packages() {
 
   if (( ${#to_remove[@]} > 0 )); then
     echo "Removing packages: ${to_remove[*]}"
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+      echo "[DRY-RUN] Would execute: sudo pacman -Rns ${to_remove[*]}"
+      return 0
+    fi
     if ! sudo pacman -Rns "${to_remove[@]}"; then
       echo "Error: pacman removal encountered an issue." >&2
       return 1
@@ -278,11 +346,14 @@ remove_packages() {
 install_tier() {
   check_privileges
   echo -e "--- Configuration ---"
-  local target_user=""
-  read -r -p "Enter the target username (leave blank to skip user config): " target_user || true
-  local AUTO="N"
-  local APPLY_PRESET="N"
+  local target_user="${CLI_USER:-}"
+  local AUTO="${CLI_AUTO:-}"
+  local APPLY_PRESET="${CLI_APPLY_PRESET:-}"
   local user_home=""
+
+  if [ -z "$target_user" ] && [ "${NON_INTERACTIVE:-0}" -eq 0 ]; then
+    read -r -p "Enter the target username (leave blank to skip user config): " target_user || true
+  fi
 
   if [ -n "$target_user" ]; then
     if ! validate_user "$target_user"; then
@@ -290,32 +361,55 @@ install_tier() {
       exit 1
     fi
     user_home=$(get_user_home "$target_user")
-    read -r -p "Do you want to enable TTY auto-start for $target_user? (Y/n): " AUTO || true
-    [ -z "$AUTO" ] && AUTO="Y"
-    read -r -p "Do you want to apply curated desktop presets (Breeze Dark, pinned taskbar) for $target_user? (Y/n): " APPLY_PRESET || true
-    [ -z "$APPLY_PRESET" ] && APPLY_PRESET="Y"
+    if [ "${NON_INTERACTIVE:-0}" -eq 1 ]; then
+      [ -z "$AUTO" ] && AUTO="Y"
+      [ -z "$APPLY_PRESET" ] && APPLY_PRESET="Y"
+    else
+      if [ -z "$AUTO" ]; then
+        read -r -p "Do you want to enable TTY auto-start for $target_user? (Y/n): " AUTO || true
+        [ -z "$AUTO" ] && AUTO="Y"
+      fi
+      if [ -z "$APPLY_PRESET" ]; then
+        read -r -p "Do you want to apply curated desktop presets (Breeze Dark, pinned taskbar) for $target_user? (Y/n): " APPLY_PRESET || true
+        [ -z "$APPLY_PRESET" ] && APPLY_PRESET="Y"
+      fi
+    fi
   fi
 
   echo -e "\n--- GUI Application Selection (Layer 2) ---"
-  echo "Select GUI applications for the target environment."
-  echo "Locally pre-installed packages are marked as '(installed)' for fast/offline setup."
-
-  local checklist_items=()
-  for item in "${APP_CATALOG[@]}"; do
-    local pkg=""
-    local desc=""
-    local default_state=""
-    IFS='|' read -r pkg desc default_state <<< "$item"
-    if pacman -Qq "$pkg" &>/dev/null; then
-      desc="$desc (installed)"
-    fi
-    checklist_items+=("$pkg" "$desc" "$default_state")
-  done
-
-  local selected_apps_str=""
   local selected_layer2=()
-  if selected_apps_str=$(prompt_checklist "Layer 2 Application Selection" "Select applications to install (Space to toggle, Enter to confirm):" "${checklist_items[@]}"); then
-    read -ra selected_layer2 <<< "$selected_apps_str"
+
+  if [ "${NON_INTERACTIVE:-0}" -eq 1 ]; then
+    echo "Non-interactive mode active: Selecting all default catalog applications."
+    for item in "${APP_CATALOG[@]}"; do
+      local pkg=""
+      local desc=""
+      local default_state=""
+      IFS='|' read -r pkg desc default_state <<< "$item"
+      if [[ "$default_state" == "ON" ]]; then
+        selected_layer2+=("$pkg")
+      fi
+    done
+  else
+    echo "Select GUI applications for the target environment."
+    echo "Locally pre-installed packages are marked as '(installed)' for fast/offline setup."
+
+    local checklist_items=()
+    for item in "${APP_CATALOG[@]}"; do
+      local pkg=""
+      local desc=""
+      local default_state=""
+      IFS='|' read -r pkg desc default_state <<< "$item"
+      if pacman -Qq "$pkg" &>/dev/null; then
+        desc="$desc (installed)"
+      fi
+      checklist_items+=("$pkg" "$desc" "$default_state")
+    done
+
+    local selected_apps_str=""
+    if selected_apps_str=$(prompt_checklist "Layer 2 Application Selection" "Select applications to install (Space to toggle, Enter to confirm):" "${checklist_items[@]}"); then
+      read -ra selected_layer2 <<< "$selected_apps_str"
+    fi
   fi
 
   echo -e "\nSelected GUI applications: ${selected_layer2[*]:-(none)}"
@@ -323,9 +417,13 @@ install_tier() {
   local install_queue=("${LAYER1[@]}" "${selected_layer2[@]:-}" "${LAYER3[@]}")
 
   echo -e "\n--- Installing selected packages ---"
-  if ! sudo pacman -S --needed "${install_queue[@]}"; then
-    echo "Error: Package installation failed or was aborted." >&2
-    exit 1
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    echo "[DRY-RUN] Would execute: sudo pacman -S --needed ${install_queue[*]}"
+  else
+    if ! sudo pacman -S --needed "${install_queue[@]}"; then
+      echo "Error: Package installation failed or was aborted." >&2
+      exit 1
+    fi
   fi
 
   if [ -n "$target_user" ] && [[ "$APPLY_PRESET" =~ ^[Yy]$ ]]; then
@@ -338,16 +436,19 @@ install_tier() {
     local profile
     profile=$(get_user_profile "$target_user" "$user_home")
 
-    if ! sudo grep -q "$AUTOSTART_START" "$profile" 2>/dev/null; then
-      if ! sudo test -f "$profile" && [[ "$(basename "$profile")" == ".bash_profile" ]]; then
-        cat <<'EOF' | sudo tee "$profile" >/dev/null
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+      echo "[DRY-RUN] Would append autostart configuration to $profile for $target_user"
+    else
+      if ! sudo grep -q "$AUTOSTART_START" "$profile" 2>/dev/null; then
+        if ! sudo test -f "$profile" && [[ "$(basename "$profile")" == ".bash_profile" ]]; then
+          cat <<'EOF' | sudo tee "$profile" >/dev/null
 # Source ~/.bashrc if present
 [[ -f ~/.bashrc ]] && . ~/.bashrc
 
 EOF
-      fi
+        fi
 
-      cat <<EOF | sudo tee -a "$profile" >/dev/null
+        cat <<EOF | sudo tee -a "$profile" >/dev/null
 
 $AUTOSTART_START
 if [ -z "\$DISPLAY" ] && [ -z "\$WAYLAND_DISPLAY" ] && [ "\${XDG_VTNR:-0}" = 1 ]; then
@@ -359,10 +460,11 @@ if [ -z "\$DISPLAY" ] && [ -z "\$WAYLAND_DISPLAY" ] && [ "\${XDG_VTNR:-0}" = 1 ]
 fi
 $AUTOSTART_END
 EOF
-      sudo chown "$target_user:$(id -gn "$target_user")" "$profile"
-      echo "Autostart added successfully to $profile"
-    else
-      echo "Autostart already exists in $profile. Skipping."
+        sudo chown "$target_user:$(id -gn "$target_user")" "$profile"
+        echo "Autostart added successfully to $profile"
+      else
+        echo "Autostart already exists in $profile. Skipping."
+      fi
     fi
   fi
 }
@@ -370,11 +472,14 @@ EOF
 remove_tier() {
   check_privileges
   echo -e "--- Configuration ---"
-  local target_user=""
+  local target_user="${CLI_USER:-}"
   local user_home=""
   local CLEAN_REMNANTS="N"
 
-  read -r -p "Enter the target username to clean up user-specific configurations (leave blank to skip): " target_user || true
+  if [ -z "$target_user" ] && [ "${NON_INTERACTIVE:-0}" -eq 0 ]; then
+    read -r -p "Enter the target username to clean up user-specific configurations (leave blank to skip): " target_user || true
+  fi
+
   if [ -n "$target_user" ]; then
     if ! validate_user "$target_user"; then
       echo "Error: Target user validation failed. Aborting removal." >&2
@@ -396,52 +501,60 @@ remove_tier() {
 
   if (( ${#installed_layer2[@]} > 0 )); then
     echo "Found ${#installed_layer2[@]} installed GUI application(s)."
-    echo "Select which applications to remove. Uncheck any package you wish to keep."
+    local to_remove_apps=()
 
-    local checklist_items=()
-    for pkg in "${installed_layer2[@]}"; do
-      local desc=""
-      case "$pkg" in
-        dolphin)  desc="KDE File Manager" ;;
-        konsole)  desc="KDE Terminal Emulator" ;;
-        firefox)  desc="Firefox Web Browser" ;;
-        chromium) desc="Chromium Web Browser" ;;
-        ark)      desc="KDE Archive Manager" ;;
-        gwenview) desc="KDE Image Viewer" ;;
-        okular)   desc="KDE Document/PDF Viewer" ;;
-        kate)     desc="KDE Advanced Text Editor" ;;
-        *)        desc="GUI Application" ;;
-      esac
-      checklist_items+=("$pkg" "$desc" "ON")
-    done
+    if [ "${NON_INTERACTIVE:-0}" -eq 1 ]; then
+      echo "Non-interactive mode active: Removing all installed Layer 2 applications."
+      to_remove_apps=("${installed_layer2[@]}")
+      remove_packages "${to_remove_apps[@]}"
+    else
+      echo "Select which applications to remove. Uncheck any package you wish to keep."
 
-    local selected_to_remove=""
-    if selected_to_remove=$(prompt_checklist "Layer 2 GUI Applications Removal" "Select apps to remove (Space to toggle, Enter to confirm):" "${checklist_items[@]}"); then
-      read -ra to_remove_apps <<< "$selected_to_remove"
-      if (( ${#to_remove_apps[@]} > 0 )); then
-        remove_packages "${to_remove_apps[@]}"
-      else
-        echo "No GUI applications selected for removal. Keeping all Layer 2 applications."
-      fi
-
-      local preserved=()
+      local checklist_items=()
       for pkg in "${installed_layer2[@]}"; do
-        local is_removed=false
-        for r_pkg in "${to_remove_apps[@]:-}"; do
-          if [[ "$pkg" == "$r_pkg" ]]; then
-            is_removed=true
-            break
+        local desc=""
+        case "$pkg" in
+          dolphin)  desc="KDE File Manager" ;;
+          konsole)  desc="KDE Terminal Emulator" ;;
+          firefox)  desc="Firefox Web Browser" ;;
+          chromium) desc="Chromium Web Browser" ;;
+          ark)      desc="KDE Archive Manager" ;;
+          gwenview) desc="KDE Image Viewer" ;;
+          okular)   desc="KDE Document/PDF Viewer" ;;
+          kate)     desc="KDE Advanced Text Editor" ;;
+          *)        desc="GUI Application" ;;
+        esac
+        checklist_items+=("$pkg" "$desc" "ON")
+      done
+
+      local selected_to_remove=""
+      if selected_to_remove=$(prompt_checklist "Layer 2 GUI Applications Removal" "Select apps to remove (Space to toggle, Enter to confirm):" "${checklist_items[@]}"); then
+        read -ra to_remove_apps <<< "$selected_to_remove"
+        if (( ${#to_remove_apps[@]} > 0 )); then
+          remove_packages "${to_remove_apps[@]}"
+        else
+          echo "No GUI applications selected for removal. Keeping all Layer 2 applications."
+        fi
+
+        local preserved=()
+        for pkg in "${installed_layer2[@]}"; do
+          local is_removed=false
+          for r_pkg in "${to_remove_apps[@]:-}"; do
+            if [[ "$pkg" == "$r_pkg" ]]; then
+              is_removed=true
+              break
+            fi
+          done
+          if ! $is_removed; then
+            preserved+=("$pkg")
           fi
         done
-        if ! $is_removed; then
-          preserved+=("$pkg")
+        if (( ${#preserved[@]} > 0 )); then
+          echo -e "Preserved GUI apps on host: \033[1;32m${preserved[*]}\033[0m"
         fi
-      done
-      if (( ${#preserved[@]} > 0 )); then
-        echo -e "Preserved GUI apps on host: \033[1;32m${preserved[*]}\033[0m"
+      else
+        echo "Application removal cancelled. Keeping all GUI applications intact."
       fi
-    else
-      echo "Application removal cancelled. Keeping all GUI applications intact."
     fi
   else
     echo "No Layer 2 GUI applications are currently installed."
@@ -454,41 +567,50 @@ remove_tier() {
     echo -e "\n--- Autostart Cleanup ---"
     local profile
     profile=$(get_user_profile "$target_user" "$user_home")
-    if sudo test -f "$profile"; then
-      if sudo grep -Fq "$AUTOSTART_START" "$profile" && sudo grep -Fq "$AUTOSTART_END" "$profile"; then
-        sudo sed -i.bak "/$AUTOSTART_START/,/$AUTOSTART_END/d" "$profile"
-        sudo rm -f "${profile}.bak"
-        echo "Cleaned autostart logic from $profile"
-      else
-        echo "Notice: Autostart markers not found or incomplete in $profile. Skipping removal."
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+      echo "[DRY-RUN] Would clean autostart logic from $profile"
+    else
+      if sudo test -f "$profile"; then
+        if sudo grep -Fq "$AUTOSTART_START" "$profile" && sudo grep -Fq "$AUTOSTART_END" "$profile"; then
+          sudo sed -i.bak "/$AUTOSTART_START/,/$AUTOSTART_END/d" "$profile"
+          sudo rm -f "${profile}.bak"
+          echo "Cleaned autostart logic from $profile"
+        else
+          echo "Notice: Autostart markers not found or incomplete in $profile. Skipping removal."
+        fi
       fi
     fi
 
     echo -e "\n--- User Remnant Cleanup ---"
-    read -r -p "Do you want to completely wipe local KDE config remnants for $target_user? [y/N]: " CLEAN_REMNANTS || true
+    if [ "${NON_INTERACTIVE:-0}" -eq 0 ]; then
+      read -r -p "Do you want to completely wipe local KDE config remnants for $target_user? [y/N]: " CLEAN_REMNANTS || true
+    fi
     if [[ "$CLEAN_REMNANTS" =~ ^[Yy]$ ]]; then
       echo "Cleaning remnants in $user_home..."
+      if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+        echo "[DRY-RUN] Would wipe KDE config remnants in $user_home/.config, .local/share, .cache"
+      else
+        local prefix
+        if [ -d "$user_home/.config" ]; then
+          for prefix in plasma kde kwin dolphinrc konsolerc arkrc gwenviewrc; do
+            sudo find "$user_home/.config" -mindepth 1 -maxdepth 1 -name "${prefix}*" -exec rm -rf {} +
+          done
+        fi
 
-      local prefix
-      if [ -d "$user_home/.config" ]; then
-        for prefix in plasma kde kwin dolphinrc konsolerc arkrc gwenviewrc; do
-          sudo find "$user_home/.config" -mindepth 1 -maxdepth 1 -name "${prefix}*" -exec rm -rf {} +
-        done
+        if [ -d "$user_home/.local/share" ]; then
+          for prefix in plasma dolphin konsole ark gwenview; do
+            sudo find "$user_home/.local/share" -mindepth 1 -maxdepth 1 -name "${prefix}*" -exec rm -rf {} +
+          done
+        fi
+
+        if [ -d "$user_home/.cache" ]; then
+          for prefix in plasma kde kwin; do
+            sudo find "$user_home/.cache" -mindepth 1 -maxdepth 1 -name "${prefix}*" -exec rm -rf {} +
+          done
+        fi
+
+        echo "Remnants safely removed."
       fi
-
-      if [ -d "$user_home/.local/share" ]; then
-        for prefix in plasma dolphin konsole ark gwenview; do
-          sudo find "$user_home/.local/share" -mindepth 1 -maxdepth 1 -name "${prefix}*" -exec rm -rf {} +
-        done
-      fi
-
-      if [ -d "$user_home/.cache" ]; then
-        for prefix in plasma kde kwin; do
-          sudo find "$user_home/.cache" -mindepth 1 -maxdepth 1 -name "${prefix}*" -exec rm -rf {} +
-        done
-      fi
-
-      echo "Remnants safely removed."
     else
       echo "Keeping user configurations."
     fi
@@ -497,12 +619,189 @@ remove_tier() {
   echo -e "\nPlasma desktop environment cleanly managed."
 }
 
+# ------------------------------------------------------------------------------
+# CLI Argument Parser & Execution Engine
+# ------------------------------------------------------------------------------
+show_help() {
+  cat <<EOF
+PlasmArch $PLASMARCH_VERSION - Layered KDE Plasma deployment and lifecycle manager
+
+Usage:
+  $0 [command] [options]
+  $0 [options]
+
+Commands:
+  install                 Deploy KDE Plasma, GUI apps, and desktop configuration
+  remove                  Remove KDE Plasma and clean up desktop configurations
+
+Options:
+  -i, --install           Set action to install
+  -r, --remove            Set action to remove
+  -u, --user <username>   Specify target username for desktop configurations
+  -p, --preset <name>     Desktop preset profile to apply (default: "curated")
+  -y, --yes,
+  --non-interactive       Unattended non-interactive mode (skips all prompts, uses defaults)
+  -d, --dry-run           Simulation mode (prints commands without modifying host)
+  -h, --help              Show this help message and exit
+  -v, --version           Print PlasmArch version and exit
+
+Examples:
+  # Interactive installation (classic workflow)
+  $0 install
+
+  # Unattended installation for a specific user with curated presets
+  $0 --install --user alice --yes
+
+  # Simulation dry-run of unattended removal
+  $0 --remove --user alice --non-interactive --dry-run
+
+  # Positional command with flags
+  $0 install -u bob -y
+EOF
+}
+
+parse_args() {
+  while (( $# > 0 )); do
+    case "$1" in
+      -i|--install|install)
+        if [[ -n "$CLI_ACTION" && "$CLI_ACTION" != "install" ]]; then
+          echo "Error: Conflicting actions specified ('$CLI_ACTION' and 'install')." >&2
+          exit 1
+        fi
+        CLI_ACTION="install"
+        shift
+        ;;
+      -r|--remove|remove)
+        if [[ -n "$CLI_ACTION" && "$CLI_ACTION" != "remove" ]]; then
+          echo "Error: Conflicting actions specified ('$CLI_ACTION' and 'remove')." >&2
+          exit 1
+        fi
+        CLI_ACTION="remove"
+        shift
+        ;;
+      -u|--user)
+        if (( $# < 2 )) || [[ -z "$2" ]] || [[ "$2" =~ ^- ]]; then
+          echo "Error: Option '$1' requires a valid username argument." >&2
+          exit 1
+        fi
+        CLI_USER="$2"
+        shift 2
+        ;;
+      --user=*)
+        CLI_USER="${1#*=}"
+        if [[ -z "$CLI_USER" ]]; then
+          echo "Error: Option '--user' requires a non-empty username argument." >&2
+          exit 1
+        fi
+        shift
+        ;;
+      -u=*)
+        CLI_USER="${1#*=}"
+        if [[ -z "$CLI_USER" ]]; then
+          echo "Error: Option '-u' requires a non-empty username argument." >&2
+          exit 1
+        fi
+        shift
+        ;;
+      -p|--preset)
+        if (( $# < 2 )) || [[ -z "$2" ]] || [[ "$2" =~ ^- ]]; then
+          echo "Error: Option '$1' requires a valid preset name argument." >&2
+          exit 1
+        fi
+        CLI_PRESET="$2"
+        shift 2
+        ;;
+      --preset=*)
+        CLI_PRESET="${1#*=}"
+        if [[ -z "$CLI_PRESET" ]]; then
+          echo "Error: Option '--preset' requires a non-empty preset name argument." >&2
+          exit 1
+        fi
+        shift
+        ;;
+      -p=*)
+        CLI_PRESET="${1#*=}"
+        if [[ -z "$CLI_PRESET" ]]; then
+          echo "Error: Option '-p' requires a non-empty preset name argument." >&2
+          exit 1
+        fi
+        shift
+        ;;
+      -y|--yes|--non-interactive)
+        NON_INTERACTIVE=1
+        shift
+        ;;
+      -d|--dry-run)
+        DRY_RUN=1
+        shift
+        ;;
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      -v|--version)
+        echo "PlasmArch $PLASMARCH_VERSION"
+        exit 0
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        echo "Error: Unknown option '$1'. Use --help for usage information." >&2
+        exit 1
+        ;;
+      *)
+        echo "Error: Unexpected argument '$1'. Use --help for usage information." >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  # Validate user if specified
+  if [[ -n "$CLI_USER" ]]; then
+    if ! validate_user "$CLI_USER"; then
+      exit 1
+    fi
+  fi
+}
+
+run_action() {
+  if [[ -z "$CLI_ACTION" ]]; then
+    echo "Error: No action specified. Please specify 'install' or 'remove'." >&2
+    echo "Usage: $0 {install|remove} [options]" >&2
+    echo "Run '$0 --help' for detailed usage and examples." >&2
+    exit 1
+  fi
+
+  case "$CLI_ACTION" in
+    install)
+      install_tier
+      ;;
+    remove)
+      remove_tier
+      ;;
+    *)
+      echo "Error: Invalid action '$CLI_ACTION'. Must be 'install' or 'remove'." >&2
+      exit 1
+      ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
+# Script Entry Point (with backward-compatible sed pattern preservation)
+# ------------------------------------------------------------------------------
 if [ "${1:-}" = "install" ]; then
-  install_tier
+  CLI_ACTION="install"
+  shift || true
+  parse_args "$@"
+  run_action
 elif [ "${1:-}" = "remove" ]; then
-  remove_tier
+  CLI_ACTION="remove"
+  shift || true
+  parse_args "$@"
+  run_action
 else
-  echo "Usage: $0 {install|remove}" >&2
-  echo "Run this from your standard user account. It will prompt for sudo." >&2
-  exit 1
+  parse_args "$@"
+  run_action
 fi

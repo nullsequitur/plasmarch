@@ -515,6 +515,153 @@ test_user_presets() {
 }
 
 # ------------------------------------------------------------------------------
+# Test Suite 10: Non-Interactive CLI Engine & Argument Parser
+# ------------------------------------------------------------------------------
+test_cli_argument_parsing() {
+  echo "Running Test Suite 10: Non-Interactive CLI Engine & Argument Parser..."
+
+  # 1. Version flag
+  local ver_out1 ver_out2
+  ver_out1=$("$INSTALLER_SCRIPT" -v 2>&1) || true
+  ver_out2=$("$INSTALLER_SCRIPT" --version 2>&1) || true
+  if [[ "$ver_out1" == "PlasmArch 0.2.0" && "$ver_out2" == "PlasmArch 0.2.0" ]]; then
+    pass "CLI supports -v and --version displaying PlasmArch version"
+  else
+    fail "CLI version flag" "Got -v: '$ver_out1', --version: '$ver_out2'"
+  fi
+
+  # 2. Help flag
+  local help_out
+  help_out=$("$INSTALLER_SCRIPT" --help 2>&1) || true
+  if [[ "$help_out" =~ "Usage:" && "$help_out" =~ "--non-interactive" && "$help_out" =~ "--dry-run" ]]; then
+    pass "CLI supports -h and --help displaying clean usage and options"
+  else
+    fail "CLI help flag" "Help output incomplete or missing: $help_out"
+  fi
+
+  # 3. Invocation with no action specified
+  local no_action_out=""
+  local no_action_rc=0
+  no_action_out=$("$INSTALLER_SCRIPT" 2>&1) || no_action_rc=$?
+  if [[ $no_action_rc -ne 0 && "$no_action_out" =~ "No action specified" ]]; then
+    pass "CLI rejects execution without action and provides usage guidance"
+  else
+    fail "CLI no action" "Expected non-zero exit and error message, got rc=$no_action_rc: $no_action_out"
+  fi
+
+  # 4. Conflicting actions
+  local conflict_out=""
+  local conflict_rc=0
+  conflict_out=$("$INSTALLER_SCRIPT" -i -r 2>&1) || conflict_rc=$?
+  if [[ $conflict_rc -ne 0 && "$conflict_out" =~ "Conflicting actions" ]]; then
+    pass "CLI rejects conflicting action flags (-i and -r)"
+  else
+    fail "CLI conflicting actions" "Expected conflict rejection, got rc=$conflict_rc: $conflict_out"
+  fi
+
+  local pos_conflict_out=""
+  local pos_conflict_rc=0
+  pos_conflict_out=$("$INSTALLER_SCRIPT" install remove 2>&1) || pos_conflict_rc=$?
+  if [[ $pos_conflict_rc -ne 0 && "$pos_conflict_out" =~ "Conflicting actions" ]]; then
+    pass "CLI rejects conflicting positional commands (install and remove)"
+  else
+    fail "CLI conflicting positional commands" "Got rc=$pos_conflict_rc: $pos_conflict_out"
+  fi
+
+  # 5. Invalid flags
+  local invalid_out=""
+  local invalid_rc=0
+  invalid_out=$("$INSTALLER_SCRIPT" --nonexistent-flag 2>&1) || invalid_rc=$?
+  if [[ $invalid_rc -ne 0 && "$invalid_out" =~ "Unknown option" ]]; then
+    pass "CLI gracefully rejects unknown options with exit code 1"
+  else
+    fail "CLI unknown option" "Got rc=$invalid_rc: $invalid_out"
+  fi
+
+  # 6. Missing arguments for flags
+  local missing_user_out=""
+  local missing_user_rc=0
+  missing_user_out=$("$INSTALLER_SCRIPT" --user 2>&1) || missing_user_rc=$?
+  if [[ $missing_user_rc -ne 0 && "$missing_user_out" =~ "requires a valid username argument" ]]; then
+    pass "CLI rejects --user flag without argument"
+  else
+    fail "CLI missing user argument" "Got rc=$missing_user_rc: $missing_user_out"
+  fi
+
+  local missing_preset_out=""
+  local missing_preset_rc=0
+  missing_preset_out=$("$INSTALLER_SCRIPT" --preset 2>&1) || missing_preset_rc=$?
+  if [[ $missing_preset_rc -ne 0 && "$missing_preset_out" =~ "requires a valid preset name argument" ]]; then
+    pass "CLI rejects --preset flag without argument"
+  else
+    fail "CLI missing preset argument" "Got rc=$missing_preset_rc: $missing_preset_out"
+  fi
+
+  # 7. User validation via CLI
+  local bad_user_out=""
+  local bad_user_rc=0
+  bad_user_out=$("$INSTALLER_SCRIPT" -i -u "bad@user" 2>&1) || bad_user_rc=$?
+  if [[ $bad_user_rc -ne 0 && "$bad_user_out" =~ "Invalid username format" ]]; then
+    pass "CLI rejects invalid username format via -u"
+  else
+    fail "CLI invalid username format" "Got rc=$bad_user_rc: $bad_user_out"
+  fi
+
+  local root_user_out=""
+  local root_user_rc=0
+  root_user_out=$("$INSTALLER_SCRIPT" -i -u "root" 2>&1) || root_user_rc=$?
+  if [[ $root_user_rc -ne 0 && "$root_user_out" =~ "system account" ]]; then
+    pass "CLI rejects system user (root) via -u"
+  else
+    fail "CLI root user rejection" "Got rc=$root_user_rc: $root_user_out"
+  fi
+
+  # 8. Unattended dry-run install
+  local current_user
+  current_user="$(id -un)"
+  local dry_run_out=""
+  local dry_run_rc=0
+  dry_run_out=$("$INSTALLER_SCRIPT" -i -y -u "$current_user" -d 2>&1) || dry_run_rc=$?
+
+  if [[ $dry_run_rc -eq 0 && "$dry_run_out" =~ "[DRY-RUN] Would execute: sudo pacman -S --needed" ]]; then
+    pass "CLI unattended install runs in simulation mode (-d) without root/host modification"
+  else
+    fail "CLI dry run install pacman" "Got rc=$dry_run_rc: $dry_run_out"
+  fi
+
+  if [[ "$dry_run_out" =~ "dolphin" && "$dry_run_out" =~ "konsole" && "$dry_run_out" =~ "firefox" && "$dry_run_out" =~ "ark" && "$dry_run_out" =~ "gwenview" ]]; then
+    pass "CLI unattended install automatically selects all default catalog applications"
+  else
+    fail "CLI unattended install catalog defaults" "Missing default apps in: $dry_run_out"
+  fi
+
+  if [[ "$dry_run_out" =~ "[DRY-RUN] Would append autostart configuration" && "$dry_run_out" =~ "[DRY-RUN] Would execute: sudo mkdir -p" ]]; then
+    pass "CLI unattended install automatically stages preset and autostart in dry-run"
+  else
+    fail "CLI unattended dry-run staging" "Missing autostart/preset dry-run logs in: $dry_run_out"
+  fi
+
+  # 9. Backward compatibility: Positional commands with mixed flags
+  local pos_dry_out=""
+  local pos_dry_rc=0
+  pos_dry_out=$("$INSTALLER_SCRIPT" install -u "$current_user" -y -d 2>&1) || pos_dry_rc=$?
+  if [[ $pos_dry_rc -eq 0 && "$pos_dry_out" =~ "[DRY-RUN] Would execute: sudo pacman -S --needed" ]]; then
+    pass "CLI supports positional command syntax combined with flags ('install -u ... -y -d')"
+  else
+    fail "CLI positional command with flags" "Got rc=$pos_dry_rc: $pos_dry_out"
+  fi
+
+  local pos_remove_out=""
+  local pos_remove_rc=0
+  pos_remove_out=$("$INSTALLER_SCRIPT" remove -u "$current_user" -y -d 2>&1) || pos_remove_rc=$?
+  if [[ $pos_remove_rc -eq 0 && "$pos_remove_out" =~ "Plasma desktop environment cleanly managed" ]]; then
+    pass "CLI supports positional remove syntax combined with flags ('remove -u ... -y -d')"
+  else
+    fail "CLI positional remove with flags" "Got rc=$pos_remove_rc: $pos_remove_out"
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # Run all suites
 # ------------------------------------------------------------------------------
 echo "=========================================================="
@@ -530,6 +677,7 @@ test_tui_checklist
 test_selective_layer2_removal
 test_categorized_install_workflow
 test_user_presets
+test_cli_argument_parsing
 
 PASS_COUNT=$(grep -c "^PASS$" "$SANDBOX_DIR/test_results.log" 2>/dev/null || true)
 FAIL_COUNT=$(grep -c "^FAIL$" "$SANDBOX_DIR/test_results.log" 2>/dev/null || true)
