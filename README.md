@@ -179,7 +179,14 @@ PlasmArch/
 ├── .github/
 │   └── workflows/
 │       └── test.yml      # CI workflow (Ubuntu & Arch Linux container)
+├── completions/
+│   ├── bash/
+│   │   └── plasmarch     # Bash tab-completion with dynamic user & preset discovery
+│   └── zsh/
+│       └── _plasmarch    # Zsh tab-completion with rich option descriptions
 ├── installer.sh          # Main entrypoint script (install | remove | flags)
+├── Makefile              # Standard install / uninstall targets (PREFIX=/usr)
+├── PKGBUILD              # Arch Linux AUR package specification
 ├── presets/
 │   ├── curated/          # Out-of-the-box user configuration templates
 │   │   ├── description.txt
@@ -202,7 +209,31 @@ PlasmArch/
 
 ---
 
-## 8. Prerequisites & Best Practices
+## 8. Installation & Packaging
+
+### AUR Installation (Arch Linux)
+PlasmArch is packaged for Arch Linux and can be installed via the AUR:
+```bash
+paru -S plasmarch
+# or
+yay -S plasmarch
+```
+
+### Manual Installation via Makefile
+```bash
+git clone https://github.com/lampros/PlasmArch.git
+cd PlasmArch
+sudo make install
+```
+This deploys:
+- Binary: `/usr/bin/plasmarch`
+- Desktop Presets: `/usr/share/plasmarch/presets/`
+- Bash Completion: `/usr/share/bash-completion/completions/plasmarch`
+- Zsh Completion: `/usr/share/zsh/site-functions/_plasmarch`
+
+---
+
+## 9. Prerequisites & Best Practices
 
 - **Arch Linux:** Target host running an up-to-date Arch Linux installation.
 - **Target User Pre-creation:** The target user account must exist prior to running the installer:

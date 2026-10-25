@@ -1,0 +1,15 @@
+pkgbase = plasmarch
+	pkgdesc = Layered, state-aware installer and manager for secondary KDE Plasma users on Arch Linux
+	pkgver = 0.2.0
+	pkgrel = 1
+	url = https://github.com/lampros/PlasmArch
+	arch = any
+	license = MIT
+	depends = bash
+	depends = sudo
+	depends = pacman
+	optdepends = whiptail: dialog-based interactive TUI checklist
+	source = plasmarch-0.2.0.tar.gz::https://github.com/lampros/PlasmArch/archive/v0.2.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = plasmarch

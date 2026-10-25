@@ -1,0 +1,99 @@
+# bash completion for plasmarch
+
+_plasmarch_get_users() {
+  if command -v getent >/dev/null 2>&1; then
+    getent passwd | awk -F: '$3 >= 1000 && $1 != "nobody" {print $1}'
+  elif [[ -f /etc/passwd ]]; then
+    awk -F: '$3 >= 1000 && $1 != "nobody" {print $1}' /etc/passwd 2>/dev/null
+  fi
+}
+
+_plasmarch_get_presets() {
+  local dirs=()
+  local names=()
+
+  # User presets
+  local user_dir="${PLASMARCH_USER_PRESETS_DIR:-$HOME/.config/plasmarch/presets}"
+  [[ -d "$user_dir" ]] && dirs+=("$user_dir")
+
+  # System presets
+  if [[ -n "${PLASMARCH_SYSTEM_PRESETS_DIR:-}" ]]; then
+    dirs+=("$PLASMARCH_SYSTEM_PRESETS_DIR")
+  else
+    [[ -d "./presets" ]] && dirs+=("./presets")
+    [[ -d "/usr/share/plasmarch/presets" ]] && dirs+=("/usr/share/plasmarch/presets")
+    [[ -d "/usr/local/share/plasmarch/presets" ]] && dirs+=("/usr/local/share/plasmarch/presets")
+  fi
+
+  for d in "${dirs[@]}"; do
+    if [[ -d "$d" ]]; then
+      for sub in "$d"/*; do
+        if [[ -d "$sub" ]]; then
+          local bname
+          bname="$(basename "$sub")"
+          [[ "$bname" != .* ]] && names+=("$bname")
+        fi
+      done
+    fi
+  done
+
+  if (( ${#names[@]} > 0 )); then
+    printf '%s\n' "${names[@]}" | sort -u
+  fi
+}
+
+_plasmarch() {
+  local cur prev words cword
+  if declare -F _init_completion >/dev/null 2>&1; then
+    _init_completion -n = || return
+  else
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+  fi
+
+  local opts="-i --install -r --remove -u --user -p --preset -y --yes --non-interactive -d --dry-run -h --help -v --version --list-presets"
+  local commands="install remove list-presets"
+
+  case "$prev" in
+    -u|--user)
+      local users
+      users="$(_plasmarch_get_users)"
+      COMPREPLY=($(compgen -W "$users" -- "$cur"))
+      return 0
+      ;;
+    -p|--preset)
+      local presets
+      presets="$(_plasmarch_get_presets)"
+      COMPREPLY=($(compgen -W "$presets" -- "$cur"))
+      return 0
+      ;;
+  esac
+
+  if [[ "$cur" == --user=* ]]; then
+    local cur_val="${cur#--user=}"
+    local users
+    users="$(_plasmarch_get_users)"
+    local matches=($(compgen -W "$users" -- "$cur_val"))
+    COMPREPLY=($(compgen -P "--user=" -W "${matches[*]}" -- "$cur_val"))
+    return 0
+  elif [[ "$cur" == --preset=* ]]; then
+    local cur_val="${cur#--preset=}"
+    local presets
+    presets="$(_plasmarch_get_presets)"
+    local matches=($(compgen -W "$presets" -- "$cur_val"))
+    COMPREPLY=($(compgen -P "--preset=" -W "${matches[*]}" -- "$cur_val"))
+    return 0
+  fi
+
+  if [[ "$cur" == -* ]]; then
+    COMPREPLY=($(compgen -W "$opts" -- "$cur"))
+    return 0
+  else
+    COMPREPLY=($(compgen -W "$opts $commands" -- "$cur"))
+    return 0
+  fi
+}
+
+complete -F _plasmarch plasmarch
+complete -F _plasmarch installer.sh
+complete -F _plasmarch ./installer.sh
