@@ -55,7 +55,16 @@ readonly LAYER3=(
 readonly AUTOSTART_START="# --- KDE PLASMA AUTOSTART ---"
 readonly AUTOSTART_END="# --- END KDE PLASMA AUTOSTART ---"
 readonly SCRIPT_DIR="${PLASMARCH_SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-readonly CURATED_PRESETS_DIR="$SCRIPT_DIR/presets/curated/.config"
+readonly SYSTEM_PRESETS_DIR="$SCRIPT_DIR/presets"
+readonly CURATED_PRESETS_DIR="$SYSTEM_PRESETS_DIR/curated/.config"
+
+get_user_presets_dir() {
+  echo "${PLASMARCH_USER_PRESETS_DIR:-$HOME/.config/plasmarch/presets}"
+}
+
+get_system_presets_dir() {
+  echo "${PLASMARCH_SYSTEM_PRESETS_DIR:-$SCRIPT_DIR/presets}"
+}
 
 check_privileges() {
   local current_uid="${PLASMARCH_TEST_EUID:-${EUID:-$(id -u)}}"
@@ -134,22 +143,180 @@ get_user_profile() {
   esac
 }
 
-apply_user_preset() {
+get_preset_description() {
+  local dir="$1"
+  local name="$2"
+
+  if [[ -f "$dir/description.txt" ]]; then
+    head -n 1 "$dir/description.txt" | tr -d '\r\n'
+  elif [[ -f "$dir/preset.conf" ]] && grep -q "^description=" "$dir/preset.conf"; then
+    grep "^description=" "$dir/preset.conf" | head -n 1 | cut -d= -f2- | tr -d '\r\n'
+  else
+    case "$name" in
+      curated) echo "Breeze Dark baseline with pinned taskbar and enhanced Dolphin previews" ;;
+      minimal) echo "Lean profile with clean, minimal taskbar and basic dark theme" ;;
+      *) echo "Custom preset ($name)" ;;
+    esac
+  fi
+}
+
+get_available_presets() {
+  local names=()
+  local user_presets_dir
+  user_presets_dir="$(get_user_presets_dir)"
+  local sys_presets_dir
+  sys_presets_dir="$(get_system_presets_dir)"
+
+  if [[ -d "$user_presets_dir" ]]; then
+    for dir in "$user_presets_dir"/*; do
+      [[ -d "$dir" ]] && names+=("$(basename "$dir")")
+    done
+  fi
+  if [[ -d "$sys_presets_dir" ]]; then
+    for dir in "$sys_presets_dir"/*; do
+      if [[ -d "$dir" ]]; then
+        local bname
+        bname="$(basename "$dir")"
+        local exists=false
+        for n in "${names[@]:-}"; do
+          if [[ "$n" == "$bname" ]]; then exists=true; break; fi
+        done
+        $exists || names+=("$bname")
+      fi
+    done
+  fi
+  echo "${names[*]:-}"
+}
+
+list_presets() {
+  echo "Available Desktop Presets:"
+  local found=()
+  local preset_name
+  local user_presets_dir
+  user_presets_dir="$(get_user_presets_dir)"
+  local sys_presets_dir
+  sys_presets_dir="$(get_system_presets_dir)"
+
+  # Scan user-level custom presets: ~/.config/plasmarch/presets/<name>/
+  if [[ -d "$user_presets_dir" ]]; then
+    for dir in "$user_presets_dir"/*; do
+      if [[ -d "$dir" ]]; then
+        preset_name=$(basename "$dir")
+        local desc
+        desc=$(get_preset_description "$dir" "$preset_name")
+        printf "  - %-12s : %s (user)\n" "$preset_name" "$desc"
+        found+=("$preset_name")
+      fi
+    done
+  fi
+
+  # Scan system-level presets: presets/<name>/
+  if [[ -d "$sys_presets_dir" ]]; then
+    for dir in "$sys_presets_dir"/*; do
+      if [[ -d "$dir" ]]; then
+        preset_name=$(basename "$dir")
+        local overridden=false
+        for f in "${found[@]:-}"; do
+          if [[ "$f" == "$preset_name" ]]; then
+            overridden=true
+            break
+          fi
+        done
+        if ! $overridden; then
+          local desc
+          desc=$(get_preset_description "$dir" "$preset_name")
+          printf "  - %-12s : %s (system)\n" "$preset_name" "$desc"
+          found+=("$preset_name")
+        fi
+      fi
+    done
+  fi
+
+  if (( ${#found[@]} == 0 )); then
+    echo "  (No presets found)"
+  fi
+}
+
+resolve_preset_dir() {
+  local preset_arg="$1"
+
+  # Direct directory path support (e.g. testing or explicit path)
+  if [[ -d "$preset_arg" ]]; then
+    echo "$preset_arg"
+    return 0
+  fi
+
+  # If explicit path with / was given and does not exist, fail immediately
+  if [[ "$preset_arg" =~ / ]]; then
+    return 1
+  fi
+
+  local user_presets_dir
+  user_presets_dir="$(get_user_presets_dir)"
+  local sys_presets_dir
+  sys_presets_dir="$(get_system_presets_dir)"
+
+  # 1. User-level custom presets: ~/.config/plasmarch/presets/<name>/
+  if [[ -d "$user_presets_dir/$preset_arg" ]]; then
+    echo "$user_presets_dir/$preset_arg"
+    return 0
+  fi
+
+  # 2. System-level presets: presets/<name>/
+  if [[ -d "$sys_presets_dir/$preset_arg" ]]; then
+    echo "$sys_presets_dir/$preset_arg"
+    return 0
+  fi
+
+  return 1
+}
+
+apply_preset() {
   local target_user="$1"
   local user_home="$2"
-  local preset_dir="${3:-$CURATED_PRESETS_DIR}"
+  local preset_arg="${3:-curated}"
 
-  if [[ ! -d "$preset_dir" ]]; then
-    echo "Warning: Preset directory '$preset_dir' not found. Skipping preset application." >&2
-    return 1
+  local resolved_dir=""
+  if ! resolved_dir=$(resolve_preset_dir "$preset_arg"); then
+    local avail
+    avail=$(get_available_presets)
+    echo "Error: Preset '$preset_arg' not found." >&2
+    echo "Available presets: ${avail:-none}" >&2
+    exit 1
   fi
 
   local target_config="$user_home/.config"
   sudo mkdir -p "$target_config"
-  sudo cp -r "$preset_dir/." "$target_config/"
+
+  if [[ -d "$resolved_dir/.config" ]]; then
+    sudo cp -r "$resolved_dir/.config/." "$target_config/"
+  else
+    # Direct config folder (e.g., when passing curated/.config directly or a custom folder)
+    for item in "$resolved_dir"/* "$resolved_dir"/.*; do
+      local base
+      base=$(basename "$item")
+      if [[ "$base" == "." || "$base" == ".." || "$base" == "*" || "$base" == "description.txt" || "$base" == "preset.conf" ]]; then
+        continue
+      fi
+      if [[ -e "$item" ]]; then
+        sudo cp -r "$item" "$target_config/"
+      fi
+    done
+  fi
+
+  if [[ -d "$resolved_dir/.local" ]]; then
+    sudo mkdir -p "$user_home/.local"
+    sudo cp -r "$resolved_dir/.local/." "$user_home/.local/"
+    sudo chown -R "$target_user:$target_user" "$user_home/.local"
+  fi
+
   sudo chown -R "$target_user:$target_user" "$target_config"
-  echo -e "Applied curated desktop preset (\033[1;32mBreeze Dark, Pinned Taskbar, Enhanced Dolphin Previews\033[0m) for $target_user."
+  echo -e "Applied desktop preset '\033[1;32m$preset_arg\033[0m' for $target_user."
   return 0
+}
+
+apply_user_preset() {
+  apply_preset "$@"
 }
 
 # ------------------------------------------------------------------------------
@@ -330,7 +497,7 @@ install_tier() {
 
   if [ -n "$target_user" ] && [[ "$APPLY_PRESET" =~ ^[Yy]$ ]]; then
     echo -e "\n--- Desktop Presets ---"
-    apply_user_preset "$target_user" "$user_home"
+    apply_user_preset "$target_user" "$user_home" "${PRESET_NAME:-${PLASMARCH_PRESET:-curated}}"
   fi
 
   if [ -n "$target_user" ] && [[ "$AUTO" =~ ^[Yy]$ ]]; then
@@ -501,8 +668,11 @@ if [ "${1:-}" = "install" ]; then
   install_tier
 elif [ "${1:-}" = "remove" ]; then
   remove_tier
+elif [ "${1:-}" = "--list-presets" ] || [ "${1:-}" = "list-presets" ]; then
+  list_presets
+  exit 0
 else
-  echo "Usage: $0 {install|remove}" >&2
+  echo "Usage: $0 {install|remove|--list-presets}" >&2
   echo "Run this from your standard user account. It will prompt for sudo." >&2
   exit 1
 fi

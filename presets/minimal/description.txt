@@ -1,0 +1,1 @@
+Lean profile with clean, minimal taskbar and basic dark theme

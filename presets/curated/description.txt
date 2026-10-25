@@ -1,0 +1,1 @@
+Breeze Dark baseline with pinned taskbar (Konsole, Dolphin, Firefox) and enhanced Dolphin previews
