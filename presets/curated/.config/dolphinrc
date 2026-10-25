@@ -1,0 +1,7 @@
+[General]
+BrowseThroughArchives=true
+GlobalViewProps=true
+Version=24.08.0
+
+[PreviewSettings]
+Plugins=audiothumbnail,comicbookthumbnail,djvuthumbnail,ebookthumbnail,exrthumbnail,directorythumbnail,fontthumbnail,imagethumbnail,jpegthumbnail,kraviewthumbnail,windowsexethumbnail,windowsimagethumbnail,svgthumbnail,gsthumbnail,videothumbnail

@@ -54,6 +54,8 @@ readonly LAYER3=(
 
 readonly AUTOSTART_START="# --- KDE PLASMA AUTOSTART ---"
 readonly AUTOSTART_END="# --- END KDE PLASMA AUTOSTART ---"
+readonly SCRIPT_DIR="${PLASMARCH_SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+readonly CURATED_PRESETS_DIR="$SCRIPT_DIR/presets/curated/.config"
 
 check_privileges() {
   local current_uid="${PLASMARCH_TEST_EUID:-${EUID:-$(id -u)}}"
@@ -130,6 +132,24 @@ get_user_profile() {
       fi
       ;;
   esac
+}
+
+apply_user_preset() {
+  local target_user="$1"
+  local user_home="$2"
+  local preset_dir="${3:-$CURATED_PRESETS_DIR}"
+
+  if [[ ! -d "$preset_dir" ]]; then
+    echo "Warning: Preset directory '$preset_dir' not found. Skipping preset application." >&2
+    return 1
+  fi
+
+  local target_config="$user_home/.config"
+  sudo mkdir -p "$target_config"
+  sudo cp -r "$preset_dir/." "$target_config/"
+  sudo chown -R "$target_user:$target_user" "$target_config"
+  echo -e "Applied curated desktop preset (\033[1;32mBreeze Dark, Pinned Taskbar, Enhanced Dolphin Previews\033[0m) for $target_user."
+  return 0
 }
 
 # ------------------------------------------------------------------------------
@@ -261,6 +281,7 @@ install_tier() {
   local target_user=""
   read -r -p "Enter the target username (leave blank to skip user config): " target_user || true
   local AUTO="N"
+  local APPLY_PRESET="N"
   local user_home=""
 
   if [ -n "$target_user" ]; then
@@ -271,6 +292,8 @@ install_tier() {
     user_home=$(get_user_home "$target_user")
     read -r -p "Do you want to enable TTY auto-start for $target_user? (Y/n): " AUTO || true
     [ -z "$AUTO" ] && AUTO="Y"
+    read -r -p "Do you want to apply curated desktop presets (Breeze Dark, pinned taskbar) for $target_user? (Y/n): " APPLY_PRESET || true
+    [ -z "$APPLY_PRESET" ] && APPLY_PRESET="Y"
   fi
 
   echo -e "\n--- GUI Application Selection (Layer 2) ---"
@@ -303,6 +326,11 @@ install_tier() {
   if ! sudo pacman -S --needed "${install_queue[@]}"; then
     echo "Error: Package installation failed or was aborted." >&2
     exit 1
+  fi
+
+  if [ -n "$target_user" ] && [[ "$APPLY_PRESET" =~ ^[Yy]$ ]]; then
+    echo -e "\n--- Desktop Presets ---"
+    apply_user_preset "$target_user" "$user_home"
   fi
 
   if [ -n "$target_user" ] && [[ "$AUTO" =~ ^[Yy]$ ]]; then
