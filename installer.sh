@@ -832,6 +832,21 @@ EOF
 }
 
 parse_args() {
+  # Pre-scan for informational flags (--help, -h, --version, -v) so they take precedence over all options
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      -v|--version)
+        echo "PlasmArch $PLASMARCH_VERSION"
+        exit 0
+        ;;
+    esac
+  done
+
   while (( $# > 0 )); do
     case "$1" in
       --list-presets|list-presets)

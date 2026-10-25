@@ -930,6 +930,246 @@ test_cli_argument_parsing() {
 }
 
 # ------------------------------------------------------------------------------
+# Test Suite 12: End-to-End CLI & Dynamic Preset Simulation (Sandboxed Integration)
+# ------------------------------------------------------------------------------
+test_sandboxed_cli_presets_integration() {
+  echo "Running Test Suite 12: Sandboxed CLI Flags & Dynamic Presets Integration..."
+
+  local current_user
+  current_user="$(id -un)"
+
+  # 1. Non-interactive unattended installation specifying preset minimal:
+  #    ./installer.sh -i -u <user> -p minimal -y -d
+  local min_dry_out="" min_dry_rc=0
+  min_dry_out=$("$INSTALLER_SCRIPT" -i -u "$current_user" -p minimal -y -d 2>&1) || min_dry_rc=$?
+
+  if [[ $min_dry_rc -eq 0 && "$min_dry_out" =~ "Applied desktop preset" && "$min_dry_out" =~ "minimal" && "$min_dry_out" =~ "(dry-run)" ]]; then
+    pass "CLI unattended install with minimal preset (-p minimal) stages minimal profile in dry-run"
+  else
+    fail "CLI unattended install minimal preset" "Got rc=$min_dry_rc: $min_dry_out"
+  fi
+
+  if [[ "$min_dry_out" =~ "[DRY-RUN] Would execute: sudo pacman -S --needed" ]] && \
+     [[ "$min_dry_out" =~ "[DRY-RUN] Would append autostart configuration" ]] && \
+     [[ "$min_dry_out" =~ "presets/minimal/." ]]; then
+    pass "CLI unattended install stages package queue, autostart, and preset files without error"
+  else
+    fail "CLI unattended install minimal staging" "Missing dry run details in: $min_dry_out"
+  fi
+
+  # 2. Test --dry-run with remove action:
+  #    ./installer.sh -r -u <user> -y -d
+  #    Verifying zero removal operations take place even when packages are reported installed.
+  (
+    local mock_bin="$SANDBOX_DIR/mock_remove_bin"
+    mkdir -p "$mock_bin"
+
+    # Mock pacman to report Layer 1 & 2 packages installed
+    cat << 'EOF' > "$mock_bin/pacman"
+#!/bin/bash
+if [[ "$1" == "-Qq" ]]; then
+  shift
+  for p in "$@"; do
+    case "$p" in
+      plasma-desktop|plasma-nm|dolphin|konsole|firefox|ark)
+        echo "$p"
+        ;;
+      *)
+        ;;
+    esac
+  done
+  exit 0
+fi
+echo "PACMAN_EXEC: $*" >> "$SANDBOX_DIR/unexpected_pacman.log"
+exit 0
+EOF
+    chmod +x "$mock_bin/pacman"
+
+    # Mock sudo to detect any actual destructive command invocation
+    cat << 'EOF' > "$mock_bin/sudo"
+#!/bin/bash
+echo "SUDO_EXEC: $*" >> "$SANDBOX_DIR/unexpected_sudo.log"
+exit 0
+EOF
+    chmod +x "$mock_bin/sudo"
+
+    rm -f "$SANDBOX_DIR/unexpected_pacman.log" "$SANDBOX_DIR/unexpected_sudo.log"
+
+    local remove_dry_out="" remove_dry_rc=0
+    remove_dry_out=$(PATH="$mock_bin:$PATH" "$INSTALLER_SCRIPT" -r -u "$current_user" -y -d 2>&1) || remove_dry_rc=$?
+
+    if [[ $remove_dry_rc -eq 0 && "$remove_dry_out" =~ "Plasma desktop environment cleanly managed." ]]; then
+      pass "CLI dry-run removal (-r -u ... -y -d) completes cleanly with exit code 0"
+    else
+      fail "CLI dry-run removal exit code" "Got rc=$remove_dry_rc: $remove_dry_out"
+    fi
+
+    # Check zero removal operations executed
+    if [[ ! -f "$SANDBOX_DIR/unexpected_sudo.log" ]] || [[ ! -s "$SANDBOX_DIR/unexpected_sudo.log" ]]; then
+      pass "CLI dry-run removal strictly performs ZERO actual removal/sudo operations"
+    else
+      fail "CLI dry-run removal zero ops" "Unexpected sudo calls: $(cat "$SANDBOX_DIR/unexpected_sudo.log")"
+    fi
+
+    if [[ ! -f "$SANDBOX_DIR/unexpected_pacman.log" ]] || [[ ! -s "$SANDBOX_DIR/unexpected_pacman.log" ]]; then
+      pass "CLI dry-run removal strictly performs ZERO pacman mutating invocations"
+    else
+      fail "CLI dry-run removal pacman ops" "Unexpected pacman calls: $(cat "$SANDBOX_DIR/unexpected_pacman.log")"
+    fi
+
+    if [[ "$remove_dry_out" =~ "[DRY-RUN] Would execute: sudo pacman -Rns" ]] && \
+       [[ "$remove_dry_out" =~ "[DRY-RUN] Would clean autostart logic" ]]; then
+      pass "CLI dry-run removal accurately logs simulated pacman and autostart removals"
+    else
+      fail "CLI dry-run removal logs" "Missing dry-run logs in: $remove_dry_out"
+    fi
+
+    if [[ "$remove_dry_out" =~ "Protected system daemons" ]] && \
+       [[ ! "$remove_dry_out" =~ "pacman -Rns.*networkmanager" ]] && \
+       [[ ! "$remove_dry_out" =~ "pacman -Rns.*bluez" ]]; then
+      pass "CLI dry-run removal strictly preserves Layer 3 daemons (networkmanager, bluez)"
+    else
+      fail "CLI dry-run removal daemons" "Protected daemons targeted in: $remove_dry_out"
+    fi
+  )
+
+  # 3. Test user-defined custom preset in combination with CLI flags:
+  #    PLASMARCH_USER_PRESETS_DIR=... ./installer.sh -i -u <user> -p <custom_name> -y -d
+  (
+    local fake_user_presets="$SANDBOX_DIR/custom_user_presets"
+    mkdir -p "$fake_user_presets/dracula/.config"
+    echo "ColorScheme=DraculaDark" > "$fake_user_presets/dracula/.config/kdeglobals"
+    echo "Dark vampire theme for night owls" > "$fake_user_presets/dracula/description.txt"
+
+    local custom_dry_out="" custom_dry_rc=0
+    custom_dry_out=$(PLASMARCH_USER_PRESETS_DIR="$fake_user_presets" "$INSTALLER_SCRIPT" -i -u "$current_user" -p dracula -y -d 2>&1) || custom_dry_rc=$?
+
+    if [[ $custom_dry_rc -eq 0 && "$custom_dry_out" =~ "Applied desktop preset" && "$custom_dry_out" =~ "dracula" && "$custom_dry_out" =~ "(dry-run)" ]]; then
+      pass "CLI unattended install deploys user-defined custom preset (-p dracula) via PLASMARCH_USER_PRESETS_DIR"
+    else
+      fail "CLI custom preset install" "Got rc=$custom_dry_rc: $custom_dry_out"
+    fi
+
+    if [[ "$custom_dry_out" =~ "sudo cp -r $fake_user_presets/dracula/." ]]; then
+      pass "CLI custom preset install stages files directly from user presets directory"
+    else
+      fail "CLI custom preset source path" "Missing custom preset path in: $custom_dry_out"
+    fi
+  )
+
+  # 4. Test --list-presets invocation from CLI flag and ensure output contains both system and user presets when present
+  (
+    local fake_user_presets="$SANDBOX_DIR/custom_user_presets"
+    mkdir -p "$fake_user_presets/dracula/.config"
+    echo "Dark vampire theme for night owls" > "$fake_user_presets/dracula/description.txt"
+
+    local list_cli_out="" list_cli_rc=0
+    list_cli_out=$(PLASMARCH_USER_PRESETS_DIR="$fake_user_presets" "$INSTALLER_SCRIPT" --list-presets 2>&1) || list_cli_rc=$?
+
+    if [[ $list_cli_rc -eq 0 && "$list_cli_out" =~ "Available Desktop Presets:" ]]; then
+      pass "CLI --list-presets executes cleanly with exit code 0"
+    else
+      fail "CLI --list-presets exit code" "Got rc=$list_cli_rc: $list_cli_out"
+    fi
+
+    if [[ "$list_cli_out" =~ "curated" && "$list_cli_out" =~ "(system)" ]] && \
+       [[ "$list_cli_out" =~ "minimal" && "$list_cli_out" =~ "(system)" ]]; then
+      pass "CLI --list-presets catalog includes built-in system presets (curated, minimal)"
+    else
+      fail "CLI --list-presets system presets" "Missing system presets in: $list_cli_out"
+    fi
+
+    if [[ "$list_cli_out" =~ "dracula" && "$list_cli_out" =~ "Dark vampire theme for night owls" && "$list_cli_out" =~ "(user)" ]]; then
+      pass "CLI --list-presets catalog discovers and displays user-defined presets with (user) tag"
+    else
+      fail "CLI --list-presets user presets" "Missing custom user preset in: $list_cli_out"
+    fi
+
+    # Positional list-presets command test
+    local pos_list_out="" pos_list_rc=0
+    pos_list_out=$(PLASMARCH_USER_PRESETS_DIR="$fake_user_presets" "$INSTALLER_SCRIPT" list-presets 2>&1) || pos_list_rc=$?
+    if [[ $pos_list_rc -eq 0 && "$pos_list_out" =~ "dracula" && "$pos_list_out" =~ "curated" ]]; then
+      pass "CLI supports positional 'list-presets' syntax identically to '--list-presets'"
+    else
+      fail "CLI positional list-presets" "Got rc=$pos_list_rc: $pos_list_out"
+    fi
+  )
+
+  # 5. Test edge case combinations: e.g. --help with other flags, --version with other flags (ensuring info flags take precedence and exit 0 cleanly)
+  local help_edge_out1="" help_edge_rc1=0
+  help_edge_out1=$("$INSTALLER_SCRIPT" -i --help 2>&1) || help_edge_rc1=$?
+  if [[ $help_edge_rc1 -eq 0 && "$help_edge_out1" =~ "Usage:" && "$help_edge_out1" =~ "Options:" ]]; then
+    pass "CLI info precedence: '-i --help' displays usage and exits 0"
+  else
+    fail "CLI info precedence -i --help" "Got rc=$help_edge_rc1: $help_edge_out1"
+  fi
+
+  local help_edge_out2="" help_edge_rc2=0
+  help_edge_out2=$("$INSTALLER_SCRIPT" --help -r 2>&1) || help_edge_rc2=$?
+  if [[ $help_edge_rc2 -eq 0 && "$help_edge_out2" =~ "Usage:" ]]; then
+    pass "CLI info precedence: '--help -r' displays usage and exits 0"
+  else
+    fail "CLI info precedence --help -r" "Got rc=$help_edge_rc2: $help_edge_out2"
+  fi
+
+  local help_edge_out3="" help_edge_rc3=0
+  help_edge_out3=$("$INSTALLER_SCRIPT" -i -u "$current_user" -p minimal -y -d -h 2>&1) || help_edge_rc3=$?
+  if [[ $help_edge_rc3 -eq 0 && "$help_edge_out3" =~ "Usage:" ]]; then
+    pass "CLI info precedence: -h combined with full install flag set displays usage and exits 0"
+  else
+    fail "CLI info precedence full install -h" "Got rc=$help_edge_rc3: $help_edge_out3"
+  fi
+
+  local help_edge_out4="" help_edge_rc4=0
+  help_edge_out4=$("$INSTALLER_SCRIPT" -i -r --help 2>&1) || help_edge_rc4=$?
+  if [[ $help_edge_rc4 -eq 0 && "$help_edge_out4" =~ "Usage:" ]]; then
+    pass "CLI info precedence: '--help' takes precedence over conflicting action flags (-i -r)"
+  else
+    fail "CLI info precedence conflicting -i -r --help" "Got rc=$help_edge_rc4: $help_edge_out4"
+  fi
+
+  local help_edge_out5="" help_edge_rc5=0
+  help_edge_out5=$("$INSTALLER_SCRIPT" --unknown-option-xyz --help 2>&1) || help_edge_rc5=$?
+  if [[ $help_edge_rc5 -eq 0 && "$help_edge_out5" =~ "Usage:" ]]; then
+    pass "CLI info precedence: '--help' takes precedence over unknown options"
+  else
+    fail "CLI info precedence unknown option --help" "Got rc=$help_edge_rc5: $help_edge_out5"
+  fi
+
+  local ver_edge_out1="" ver_edge_rc1=0
+  ver_edge_out1=$("$INSTALLER_SCRIPT" -i --version 2>&1) || ver_edge_rc1=$?
+  if [[ $ver_edge_rc1 -eq 0 && "$ver_edge_out1" == "PlasmArch 0.2.0" ]]; then
+    pass "CLI info precedence: '-i --version' outputs version and exits 0"
+  else
+    fail "CLI info precedence -i --version" "Got rc=$ver_edge_rc1: $ver_edge_out1"
+  fi
+
+  local ver_edge_out2="" ver_edge_rc2=0
+  ver_edge_out2=$("$INSTALLER_SCRIPT" -r -u "$current_user" -v 2>&1) || ver_edge_rc2=$?
+  if [[ $ver_edge_rc2 -eq 0 && "$ver_edge_out2" == "PlasmArch 0.2.0" ]]; then
+    pass "CLI info precedence: '-r -u ... -v' outputs version and exits 0"
+  else
+    fail "CLI info precedence -r -u ... -v" "Got rc=$ver_edge_rc2: $ver_edge_out2"
+  fi
+
+  local ver_edge_out3="" ver_edge_rc3=0
+  ver_edge_out3=$("$INSTALLER_SCRIPT" -i -r -v 2>&1) || ver_edge_rc3=$?
+  if [[ $ver_edge_rc3 -eq 0 && "$ver_edge_out3" == "PlasmArch 0.2.0" ]]; then
+    pass "CLI info precedence: '-v' takes precedence over conflicting action flags (-i -r)"
+  else
+    fail "CLI info precedence conflicting -i -r -v" "Got rc=$ver_edge_rc3: $ver_edge_out3"
+  fi
+
+  local ver_edge_out4="" ver_edge_rc4=0
+  ver_edge_out4=$("$INSTALLER_SCRIPT" -d -y --version 2>&1) || ver_edge_rc4=$?
+  if [[ $ver_edge_rc4 -eq 0 && "$ver_edge_out4" == "PlasmArch 0.2.0" ]]; then
+    pass "CLI info precedence: '-d -y --version' outputs version and exits 0"
+  else
+    fail "CLI info precedence -d -y --version" "Got rc=$ver_edge_rc4: $ver_edge_out4"
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # Run all suites
 # ------------------------------------------------------------------------------
 echo "=========================================================="
@@ -947,6 +1187,7 @@ test_categorized_install_workflow
 test_user_presets
 test_dynamic_preset_catalog
 test_cli_argument_parsing
+test_sandboxed_cli_presets_integration
 
 PASS_COUNT=$(grep -c "^PASS$" "$SANDBOX_DIR/test_results.log" 2>/dev/null || true)
 FAIL_COUNT=$(grep -c "^FAIL$" "$SANDBOX_DIR/test_results.log" 2>/dev/null || true)
